@@ -23,8 +23,7 @@ if not all([BOT_TOKEN, SIGNAL_CHANNEL_ID, ADMIN_CHAT_ID]):
 ALLOWED_CHAINS = {'solana', 'base', 'bsc'}
 
 # Rate Limiters
-DEXSCREENER_LIMIT = 3.0  
-GECKO_LIMIT = 1.5        
+SCANNER_LIMIT = 60.0  # Scan setiap 1 minit (selamat dari rate limit)GECKO_LIMIT = 1.5        
 GOPLUS_LIMIT = 1.0
 
 # Setup Logging
@@ -153,12 +152,40 @@ class QuantMath:
 class DataFetcher:
     def __init__(self, session): self.session = session
 
-    async def dexscreener_latest(self):
-        url = "https://api.dexscreener.com/token-profiles/latest/v1"
+    async def scan_new_pools(self):
+    """Scan new pools dari GeckoTerminal (semua chain kita: solana, base, bsc)"""
+    all_pools = []
+    chains_to_scan = ['solana', 'base', 'bsc']
+    
+    for chain in chains_to_scan:
+        url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/new_pools?page=1"
         try:
             async with self.session.get(url) as r:
-                return await r.json() if r.status == 200 else []
-        except: return []
+                if r.status == 200:
+                    data = await r.json()
+                    pools = data.get('data', [])
+                    for pool in pools:
+                        attrs = pool.get('attributes', {})
+                        all_pools.append({
+                            'chain': chain,
+                            'pool_address': pool.get('id', '').replace(f'{chain}_', ''),  # Remove prefix
+                            'symbol': attrs.get('name', 'UNK').split(' / ')[0] if '/' in attrs.get('name', '') else attrs.get('name', 'UNK'),
+                            'price_usd': float(attrs.get('base_token_price_usd', 0) or 0),
+                            'volume_24h': float(attrs.get('volume_usd', {}).get('h24', 0) or 0),
+                            'liquidity_usd': float(attrs.get('reserve_in_usd', 0) or 0),
+                            'market_cap': float(attrs.get('market_cap_usd', 0) or 0),
+                            'pool_created_at': attrs.get('pool_created_at', ''),
+                            'fdv': float(attrs.get('fdv_usd', 0) or 0)
+                        })
+                    logging.info(f"   ✅ {chain.upper()}: Found {len(pools)} new pools")
+                else:
+                    logging.warning(f"   ⚠️ {chain.upper()}: API returned {r.status}")
+        except Exception as e:
+            logging.error(f"   ❌ {chain.upper()} scan error: {e}")
+        
+        await asyncio.sleep(0.5)  # Elak rate limit antara chain
+    
+    return all_pools
 
     async def gecko_ohlcv(self, net, pool):
         url = f"https://api.geckoterminal.com/api/v2/networks/{net}/pools/{pool}/ohlcv/minute?aggregate=1&limit=100"
@@ -290,20 +317,36 @@ async def run_bot():
             try:
                 now = time.time()
 
-                # 1. SCANNER (DexScreener)
-                if now - last_dex >= DEXSCREENER_LIMIT:
-                    last_dex = now
-                    logging.info("🔍 Scanning DexScreener for new tokens...")
-                    items = await fetcher.dexscreener_latest()
-                    logging.info(f"📥 Found {len(items)} tokens from DexScreener")
-                    
-                    for i in items:
-                        ch = i.get('chainId','').lower()
-                        if ch not in ALLOWED_CHAINS: continue
-                        pool = i.get('poolAddress') or i.get('address')
-                        sym = i.get('tokenSymbol') or i.get('symbol','UNK')
-                        if pool: db.add(pool, ch, sym)
-                    await asyncio.sleep(0.1)
+                # 1. SCANNER (GeckoTerminal New Pools)
+if now - last_dex >= SCANNER_LIMIT:
+    last_dex = now
+    logging.info("🔍 Scanning GeckoTerminal for new pools (SOL/BASE/BSC)...")
+    pools = await fetcher.scan_new_pools()
+    logging.info(f"📥 Total {len(pools)} pools found across all chains")
+    
+    qualified_count = 0
+    for p in pools:
+        # 🔥 KRITERIA PREMIUM FILTER
+        age_hours = 0
+        if p.get('pool_created_at'):
+            try:
+                created = datetime.fromisoformat(p['pool_created_at'].replace('Z', '+00:00'))
+                age_hours = (datetime.now(created.tzinfo) - created).total_seconds() / 3600
+            except: age_hours = 999
+        
+        # Filter ketat untuk premium signal
+        if (p['liquidity_usd'] >= 30000 and       # Min liquidity $30K
+            p['volume_24h'] >= 50000 and           # Min volume $50K
+            100000 <= p['market_cap'] <= 5000000 and  # MC $100K-$5M
+            age_hours >= 1 and                      # Umur > 1 jam (anti-rugpull)
+            age_hours <= 168):                      # Max 7 hari (fresh momentum)
+            
+            db.add(p['pool_address'], p['chain'], p['symbol'])
+            qualified_count += 1
+            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
+    
+    logging.info(f"✅ {qualified_count} tokens added to watchlist (qualified from {len(pools)})")
+    await asyncio.sleep(0.1)
 
                 # 2. ANALYZER (GeckoTerminal Polling)
                 if now - last_gecko >= GECKO_LIMIT:
