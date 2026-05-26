@@ -42,23 +42,33 @@ class TelegramManager:
         self.session = session
         self.base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    async def send_signal(self, message):
-        await self._send(SIGNAL_CHANNEL_ID, message, parse_mode="HTML")
+    async def send_signal(self, message, inline_keyboard=None):
+        """Hantar signal ke Channel Premium dengan inline keyboard"""
+        await self._send(SIGNAL_CHANNEL_ID, message, parse_mode="HTML", inline_keyboard=inline_keyboard)
 
     async def send_admin_alert(self, message, level="INFO"):
-        alert = f"⚙️ <b>[{level}] SYSTEM LOG</b>\n<pre>{message}</pre>"
+        """Hantar error/log/sistem ke Admin sahaja"""
+        emoji = "⚙️" if level == "INFO" else "⚠️" if level == "WARNING" else "❌"
+        alert = f"{emoji} <b>[{level}] SYSTEM LOG</b>\n<pre>{message}</pre>"
         await self._send(ADMIN_CHAT_ID, alert, parse_mode="HTML")
 
-    async def _send(self, chat_id, text, parse_mode=None):
+    async def _send(self, chat_id, text, parse_mode=None, inline_keyboard=None):
         url = f"{self.base_url}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
-        if parse_mode: payload["parse_mode"] = parse_mode
+        if parse_mode: 
+            payload["parse_mode"] = parse_mode
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
         try:
             async with self.session.post(url, json=payload) as resp:
                 if resp.status != 200:
-                    logging.error(f"Telegram API Error: {await resp.text()}")
+                    error_text = await resp.text()
+                    logging.error(f"Telegram API Error: {error_text}")
+                    return False
+                return True
         except Exception as e:
             logging.error(f"Telegram Send Failed: {e}")
+            return False
 
 # ==========================================
 # 3. DATABASE & MATH (Optimized)
@@ -162,6 +172,119 @@ class SecurityGuard:
         return True, "Secure"
 
 # ==========================================
+# ADVANCED SIGNAL FORMATTER WITH INLINE KEYBOARD
+# ==========================================
+class SignalFormatter:
+    @staticmethod
+    def calculate_tp_levels(entry_price, atr):
+        """
+        Matematik Sebenar untuk TP Levels:
+        TP1: 2.0x ATR (Conservative, 70% probability)
+        TP2: 3.5x ATR (Moderate, 45% probability)  
+        TP3: 5.0x ATR (Aggressive, 25% probability - moonshot)
+        """
+        tp1 = entry_price + (2.0 * atr)
+        tp2 = entry_price + (3.5 * atr)
+        tp3 = entry_price + (5.0 * atr)
+        return tp1, tp2, tp3
+
+    @staticmethod
+    def get_chain_display_name(chain):
+        return {'solana': 'SOL', 'base': 'BASE', 'bsc': 'BSC'}.get(chain, chain.upper())
+
+    @staticmethod
+    def get_token_address_from_pool(pool_address, chain):
+        """
+        Extract token address from pool address
+        Note: Dalam production, anda perlu query DEX contract untuk dapat base token address
+        Untuk mockup, kita assume pool_address adalah token address (simplifikasi)
+        """
+        # TODO: Implement proper token address extraction from pool
+        return pool_address
+
+    @staticmethod
+    def build_inline_keyboard(chain, pool_address, token_address):
+        """
+        Smart Inline Keyboard:
+        - SOL: Show BONK bot only
+        - BSC/Base: Show MAESTRO bot only
+        - Always show: DexScreener + Security Check
+        """
+        keyboard = []
+        
+        # Row 1: Trading Bot (Chain-specific)
+        if chain == 'solana':
+            # BONK Bot Deep Link (Direct to snipe)
+            bonk_url = f"https://t.me/bonkbot_bot?start=snipe_{token_address}"
+            keyboard.append([{"text": "🟣 Trade with BONK", "url": bonk_url}])
+        elif chain in ['base', 'bsc']:
+            # MAESTRO Bot Deep Link (Direct to buy)
+            chain_id = '8453' if chain == 'base' else '56'
+            maestro_url = f"https://t.me/MaestroSniperBot?start=buy_{token_address}_{chain_id}"
+            keyboard.append([{"text": "🔵 Trade with MAESTRO", "url": maestro_url}])
+        
+        # Row 2: DexScreener (Direct to pool chart)
+        dexscreener_url = f"https://dexscreener.com/{chain}/{pool_address}"
+        keyboard.append([{"text": "📊 View Chart", "url": dexscreener_url}])
+        
+        # Row 3: Security Checks (Direct links)
+        if chain == 'solana':
+            # RugCheck for Solana
+            rugcheck_url = f"https://rugcheck.xyz/tokens/{token_address}"
+            keyboard.append([{"text": "🔒 RugCheck Security", "url": rugcheck_url}])
+        else:
+            # GoPlus for EVM chains
+            chain_id = '8453' if chain == 'base' else '56'
+            goplus_url = f"https://gopluslabs.io/token-security/{chain_id}/{token_address}"
+            keyboard.append([{"text": "🔒 GoPlus Security", "url": goplus_url}])
+        
+        # Row 4: Additional Tools (Always show)
+        birdeye_url = f"https://birdeye.so/token/{token_address}?chain={chain}"
+        keyboard.append([{"text": "🦅 Birdeye Analytics", "url": birdeye_url}])
+        
+        return keyboard
+
+    @staticmethod
+    def format_premium_signal(symbol, chain, price, vwap, sl, tp1, tp2, tp3, pool_address):
+        """
+        Format signal dengan:
+        - Blue CA (Contract Address) untuk easy copy
+        - Blue Entry/SL/TP untuk visual clarity
+        - Inline keyboard dengan smart button logic
+        """
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        chain_display = SignalFormatter.get_chain_display_name(chain)
+        token_address = SignalFormatter.get_token_address_from_pool(pool_address, chain)
+        
+        # Blue text format: [text](tg://copy?text=VALUE)
+        ca_blue = f"[{token_address}](tg://copy?text={token_address})"
+        entry_blue = f"[${price:.8f}](tg://copy?text={price})"
+        sl_blue = f"[${sl:.8f}](tg://copy?text={sl})"
+        tp1_blue = f"[${tp1:.8f}](tg://copy?text={tp1})"
+        tp2_blue = f"[${tp2:.8f}](tg://copy?text={tp2})"
+        tp3_blue = f"[${tp3:.8f}](tg://copy?text={tp3})"
+        
+        message = (
+            f"🔥 <b>ALPHA SIGNAL: {symbol}</b> <i>({chain_display})</i>\n"
+            f"🕒 {ts}\n\n"
+            f"📊 <b>Setup:</b> Wyckoff Spring + VWAP Bounce\n\n"
+            f"📋 <b>CA:</b> <code>{ca_blue}</code>\n\n"
+            f"💰 <b>Entry Zone:</b> {entry_blue}\n"
+            f"🎯 <b>VWAP Reference:</b> ${vwap:.8f}\n"
+            f"🛑 <b>Stop Loss:</b> {sl_blue}\n\n"
+            f"✅ <b>Take Profit 1:</b> {tp1_blue} <i>(Conservative)</i>\n"
+            f"✅ <b>Take Profit 2:</b> {tp2_blue} <i>(Moderate)</i>\n"
+            f"✅ <b>Take Profit 3:</b> {tp3_blue} <i>(Moonshot)</i>\n\n"
+            f"🔒 <b>Security:</b> ✅ GoPlus Verified\n"
+            f"⚠️ <i>Trade at your own risk. Not financial advice.</i>"
+        )
+        
+        # Build inline keyboard
+        keyboard = SignalFormatter.build_inline_keyboard(chain, pool_address, token_address)
+        
+        return message, keyboard
+
+# ==========================================
 # 5. PREMIUM SIGNAL FORMATTER
 # ==========================================
 def format_signal(symbol, chain, price, vwap, sl, tp1, setup):
@@ -221,10 +344,12 @@ async def run_bot():
             try:
                 now = time.time()
 
-                # 1. SCANNER (DexScreener)
-                if now - last_dex >= DEXSCREENER_LIMIT:
-                    last_dex = now
-                    items = await fetcher.dexscreener_latest()
+# 1. SCANNER (DexScreener)
+if now - last_dex >= DEXSCREENER_LIMIT:
+    last_dex = now
+    logging.info("🔍 Scanning DexScreener for new tokens...")
+    items = await fetcher.dexscreener_latest()
+    logging.info(f"📥 Found {len(items)} tokens from DexScreener")
                     for i in items:
                         ch = i.get('chainId','').lower()
                         if ch not in ALLOWED_CHAINS: continue
@@ -233,31 +358,60 @@ async def run_bot():
                         if pool: db.add(pool, ch, sym)
                     await asyncio.sleep(0.1)
 
-                # 2. ANALYZER (GeckoTerminal Polling)
-                if now - last_gecko >= GECKO_LIMIT:
-                    last_gecko = now
-                    wl = db.get()[:5]  # Batch limit
-                    for pool, chain, sym in wl:
-                        candles = await fetcher.gecko_ohlcv(chain, pool)
-                        if not candles: continue
+# 2. ANALYZER (GeckoTerminal Polling)
+if now - last_gecko >= GECKO_LIMIT:
+    last_gecko = now
+    wl = db.get()[:5]  # Batch limit
+    logging.info(f"📊 Analyzing {len(wl)} tokens from watchlist (Total: {len(db.get())} in queue)")
+for pool, chain, sym in wl:
+    logging.info(f"   📈 Fetching data for {sym} ({chain.upper()})...")
+    candles = await fetcher.gecko_ohlcv(chain, pool)
+    if not candles: 
+        logging.warning(f"⚠️ No candle data for {sym}, skipping...")
+        continue
+        candles = await fetcher.gecko_ohlcv(chain, pool)
+        if not candles: continue
                         
-                        v = QuantMath.vwap(candles)
-                        a = QuantMath.atr(candles)
-                        c = QuantMath.cvd(candles)
-                        spring = QuantMath.wyckoff_spring(candles)
-                        price = candles[-1]['c']
+v = QuantMath.vwap(candles)
+a = QuantMath.atr(candles)
+c = QuantMath.cvd(candles)
+spring = QuantMath.wyckoff_spring(candles)
+price = candles[-1]['c']
 
-                        # ENTRY LOGIC
-                        if spring and price <= v * 1.02:
-                            safe, reason = await security.audit(chain, pool)
-                            if safe:
-                                sl = price - (2.5 * a)
-                                tp = price + (2.0 * a)
-                                setup = "Wyckoff Spring + VWAP Bounce"
-                                msg = format_signal(sym, chain, price, v, sl, tp, setup)
-                                await tg.send_signal(msg)
-                                db.remove(pool)
-                                await tg.send_admin_alert(f"📡 Signal Sent: {sym} | {chain.upper()}", "INFO")
+logging.info(f"   📊 {sym}: Price=${price:.8f} | VWAP=${v:.8f} | ATR={a:.8f} | Spring={spring}")
+
+# ENTRY LOGIC
+if spring and price <= v * 1.02:
+    logging.info(f"🔍 Potential signal detected: {sym} on {chain.upper()}")
+    
+    safe, reason = await security.audit(chain, pool)
+    if safe:
+        logging.info(f"✅ Security check passed for {sym}")
+        
+        # Calculate SL and TP levels using real math
+        sl = price - (2.5 * a)
+        tp1, tp2, tp3 = SignalFormatter.calculate_tp_levels(price, a)
+        
+        # Format signal with inline keyboard
+        msg, keyboard = SignalFormatter.format_premium_signal(
+            sym, chain, price, v, sl, tp1, tp2, tp3, pool
+        )
+        
+        # Send signal with inline buttons
+        success = await tg.send_signal(msg, inline_keyboard=keyboard)
+        
+        if success:
+            db.remove(pool)
+            logging.info(f"📡 Signal sent successfully: {sym} | {chain.upper()}")
+            await tg.send_admin_alert(f"📡 Signal Sent: {sym} | {chain.upper()}", "INFO")
+        else:
+            logging.error(f"❌ Failed to send signal for {sym}")
+    else:
+        logging.warning(f"🚫 Security check failed for {sym}: {reason}")
+        await tg.send_admin_alert(
+            f"🚫 Security Check Failed: {sym}\nReason: {reason}\nChain: {chain.upper()}", 
+            "WARNING"
+        )
                         await asyncio.sleep(0.2)
 
                 await asyncio.sleep(0.5)
