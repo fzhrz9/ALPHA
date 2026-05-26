@@ -326,38 +326,44 @@ async def run_bot():
             try:
                 now = time.time()
 
+                # ==========================================
                 # 1. SCANNER (GeckoTerminal New Pools)
-if now - last_dex >= SCANNER_LIMIT:
-    last_dex = now
-    logging.info("🔍 Scanning GeckoTerminal for new pools (SOL/BASE/BSC)...")
-    pools = await fetcher.scan_new_pools()
-    logging.info(f"📥 Total {len(pools)} pools found across all chains")
-    
-    qualified_count = 0
-    for p in pools:
-        # 🔥 KRITERIA PREMIUM FILTER
-        age_hours = 0
-        if p.get('pool_created_at'):
-            try:
-                created = datetime.fromisoformat(p['pool_created_at'].replace('Z', '+00:00'))
-                age_hours = (datetime.now(created.tzinfo) - created).total_seconds() / 3600
-            except: age_hours = 999
-        
-        # Filter ketat untuk premium signal
-        if (p['liquidity_usd'] >= 30000 and       # Min liquidity $30K
-            p['volume_24h'] >= 50000 and           # Min volume $50K
-            100000 <= p['market_cap'] <= 5000000 and  # MC $100K-$5M
-            age_hours >= 1 and                      # Umur > 1 jam (anti-rugpull)
-            age_hours <= 168):                      # Max 7 hari (fresh momentum)
-            
-            db.add(p['pool_address'], p['chain'], p['symbol'])
-            qualified_count += 1
-            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
-    
-    logging.info(f"✅ {qualified_count} tokens added to watchlist (qualified from {len(pools)})")
-    await asyncio.sleep(0.1)
+                # ==========================================
+                if now - last_dex >= SCANNER_LIMIT:
+                    last_dex = now
+                    logging.info("🔍 Scanning GeckoTerminal for new pools (SOL/BASE/BSC)...")
+                    pools = await fetcher.scan_new_pools()
+                    logging.info(f"📥 Total {len(pools)} pools found across all chains")
+                    
+                    qualified_count = 0
+                    for p in pools:
+                        # Kira umur token dengan selamat
+                        age_hours = 0
+                        if p.get('pool_created_at'):
+                            try:
+                                created_str = p['pool_created_at'].replace('Z', '').split('.')[0]
+                                created = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S")
+                                age_hours = (datetime.utcnow() - created).total_seconds() / 3600
+                            except Exception:
+                                age_hours = 999
+                        
+                        # 🔥 KRITERIA PREMIUM FILTER
+                        if (p['liquidity_usd'] >= 30000 and
+                            p['volume_24h'] >= 50000 and
+                            100000 <= p['market_cap'] <= 5000000 and
+                            age_hours >= 1 and
+                            age_hours <= 168):
+                            
+                            db.add(p['pool_address'], p['chain'], p['symbol'])
+                            qualified_count += 1
+                            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
+                    
+                    logging.info(f"✅ {qualified_count} tokens added to watchlist (qualified from {len(pools)})")
+                    await asyncio.sleep(0.1)
 
+                # ==========================================
                 # 2. ANALYZER (GeckoTerminal Polling)
+                # ==========================================
                 if now - last_gecko >= GECKO_LIMIT:
                     last_gecko = now
                     wl = db.get()[:5]  # Batch limit
@@ -366,7 +372,7 @@ if now - last_dex >= SCANNER_LIMIT:
                     for pool, chain, sym in wl:
                         logging.info(f"   📈 Fetching data for {sym} ({chain.upper()})...")
                         candles = await fetcher.gecko_ohlcv(chain, pool)
-                        if not candles: 
+                        if not candles:
                             logging.warning(f"   ⚠️ No candle data for {sym}, skipping...")
                             continue
                         
@@ -390,24 +396,36 @@ if now - last_dex >= SCANNER_LIMIT:
                                 sl = price - (2.5 * a)
                                 tp1, tp2, tp3 = SignalFormatter.calculate_tp_levels(price, a)
                                 
-                                # Format signal with inline keyboard
+                                # Format signal text + inline keyboard
                                 msg, keyboard = SignalFormatter.format_premium_signal(
                                     sym, chain, price, v, sl, tp1, tp2, tp3, pool
                                 )
                                 
-                                # Send signal with inline buttons directly to channel
+                                # 1. Hantar TEXT + INLINE BUTTONS
                                 success = await tg.send_signal(msg, inline_keyboard=keyboard)
                                 
                                 if success:
                                     db.remove(pool)
                                     logging.info(f"📡 Signal sent successfully: {sym} | {chain.upper()}")
                                     await tg.send_admin_alert(f"📡 Signal Sent: {sym} | {chain.upper()}", "INFO")
+                                    
+                                    # 2. Hantar CHART sebagai PHOTO (Background Task)
+                                    if candles:
+                                        chart_url = SignalFormatter.generate_chart_url(candles, price, sl, tp1, tp2, tp3, sym, chain)
+                                        if chart_url:
+                                            caption = (
+                                                f"📊 <b>{sym} ({chain.upper()})</b>\n"
+                                                f"💰 Entry: <code>{price:.8f}</code>\n"
+                                                f"🛑 SL: <code>{sl:.8f}</code>\n"
+                                                f"✅ TP1: <code>{tp1:.8f}</code> | TP2: <code>{tp2:.8f}</code>"
+                                            )
+                                            asyncio.create_task(tg.send_chart_photo(chart_url, caption))
                                 else:
                                     logging.error(f"❌ Failed to send signal for {sym}")
                             else:
                                 logging.warning(f"🚫 Security check failed for {sym}: {reason}")
                                 await tg.send_admin_alert(
-                                    f"🚫 Security Check Failed: {sym}\nReason: {reason}\nChain: {chain.upper()}", 
+                                    f"🚫 Security Check Failed: {sym}\nReason: {reason}\nChain: {chain.upper()}",
                                     "WARNING"
                                 )
                         await asyncio.sleep(0.2)
@@ -420,7 +438,10 @@ if now - last_dex >= SCANNER_LIMIT:
 
             except Exception as e:
                 err_msg = f"💥 CRASH DETECTED\n{type(e).__name__}: {str(e)}"
-                await tg.send_admin_alert(err_msg, "ERROR")
+                try:
+                    await tg.send_admin_alert(err_msg, "ERROR")
+                except:
+                    pass
                 logging.error(f"Unhandled Exception: {e}")
                 await asyncio.sleep(10)
 
