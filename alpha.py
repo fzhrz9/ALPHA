@@ -150,42 +150,51 @@ class QuantMath:
 # 5. API & SECURITY ENGINES
 # ==========================================
 class DataFetcher:
-    def __init__(self, session): self.session = session
+    def __init__(self, session): 
+        self.session = session
 
     async def scan_new_pools(self):
-    """Scan new pools dari GeckoTerminal (semua chain kita: solana, base, bsc)"""
-    all_pools = []
-    chains_to_scan = ['solana', 'base', 'bsc']
-    
-    for chain in chains_to_scan:
-        url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/new_pools?page=1"
-        try:
-            async with self.session.get(url) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    pools = data.get('data', [])
-                    for pool in pools:
-                        attrs = pool.get('attributes', {})
-                        all_pools.append({
-                            'chain': chain,
-                            'pool_address': pool.get('id', '').replace(f'{chain}_', ''),  # Remove prefix
-                            'symbol': attrs.get('name', 'UNK').split(' / ')[0] if '/' in attrs.get('name', '') else attrs.get('name', 'UNK'),
-                            'price_usd': float(attrs.get('base_token_price_usd', 0) or 0),
-                            'volume_24h': float(attrs.get('volume_usd', {}).get('h24', 0) or 0),
-                            'liquidity_usd': float(attrs.get('reserve_in_usd', 0) or 0),
-                            'market_cap': float(attrs.get('market_cap_usd', 0) or 0),
-                            'pool_created_at': attrs.get('pool_created_at', ''),
-                            'fdv': float(attrs.get('fdv_usd', 0) or 0)
-                        })
-                    logging.info(f"   ✅ {chain.upper()}: Found {len(pools)} new pools")
-                else:
-                    logging.warning(f"   ⚠️ {chain.upper()}: API returned {r.status}")
-        except Exception as e:
-            logging.error(f"   ❌ {chain.upper()} scan error: {e}")
+        """Scan new pools dari GeckoTerminal (semua chain kita: solana, base, bsc)"""
+        all_pools = []
+        chains_to_scan = ['solana', 'base', 'bsc']
         
-        await asyncio.sleep(0.5)  # Elak rate limit antara chain
-    
-    return all_pools
+        for chain in chains_to_scan:
+            url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/new_pools?page=1"
+            try:
+                async with self.session.get(url) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        pools = data.get('data', [])
+                        for pool in pools:
+                            attrs = pool.get('attributes', {})
+                            
+                            # Extract pool address (Gecko ID format is 'network_pooladdress')
+                            pool_id = pool.get('id', '')
+                            pool_address = pool_id.replace(f'{chain}_', '') if pool_id.startswith(f'{chain}_') else pool_id
+                            
+                            name = attrs.get('name', 'UNK')
+                            symbol = name.split(' / ')[0].strip() if '/' in name else name
+                            
+                            all_pools.append({
+                                'chain': chain,
+                                'pool_address': pool_address,
+                                'symbol': symbol,
+                                'price_usd': float(attrs.get('base_token_price_usd', 0) or 0),
+                                'volume_24h': float(attrs.get('volume_usd', {}).get('h24', 0) or 0),
+                                'liquidity_usd': float(attrs.get('reserve_in_usd', 0) or 0),
+                                'market_cap': float(attrs.get('market_cap_usd', 0) or 0),
+                                'pool_created_at': attrs.get('pool_created_at', ''),
+                                'fdv': float(attrs.get('fdv_usd', 0) or 0)
+                            })
+                        logging.info(f"   ✅ {chain.upper()}: Found {len(pools)} new pools")
+                    else:
+                        logging.warning(f"   ⚠️ {chain.upper()}: API returned {r.status}")
+            except Exception as e:
+                logging.error(f"   ❌ {chain.upper()} scan error: {e}")
+            
+            await asyncio.sleep(0.5)  # Elak rate limit antara chain
+        
+        return all_pools
 
     async def gecko_ohlcv(self, net, pool):
         url = f"https://api.geckoterminal.com/api/v2/networks/{net}/pools/{pool}/ohlcv/minute?aggregate=1&limit=100"
