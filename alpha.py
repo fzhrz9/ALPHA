@@ -22,9 +22,10 @@ if not all([BOT_TOKEN, SIGNAL_CHANNEL_ID, ADMIN_CHAT_ID]):
 # Rangkaian Fokus (NO ETH)
 ALLOWED_CHAINS = {'solana', 'base', 'bsc'}
 
-# Rate Limiters
-SCANNER_LIMIT = 60.0  # Scan setiap 1 minit (selamat dari rate limit)GECKO_LIMIT = 1.5        
-GOPLUS_LIMIT = 1.0
+# Rate Limiters (Optimum Free Tier)
+SCANNER_LIMIT = 60.0  # Scan new pools setiap 1 minit
+GECKO_LIMIT = 1.5     # Polling watchlist setiap 1.5 saat
+GOPLUS_LIMIT = 1.0    # Security check cooldown
 
 # Setup Logging
 logging.basicConfig(
