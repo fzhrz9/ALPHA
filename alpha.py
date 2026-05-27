@@ -515,11 +515,11 @@ async def run_bot():
                     passes_mc = p['market_cap'] >= 30000
                     passes_age = age_hours >= 0.5
 
-                        # Semua kriteria lulus — masuk watchlist terus
-                        if passes_liq and passes_vol and passes_mc and passes_age:
-                            db.add(p['pool_address'], p['chain'], p['symbol'], p.get('token_address', p['pool_address']))
-                            qualified_count += 1
-                            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
+                    # Semua kriteria lulus — masuk watchlist terus
+                    if passes_liq and passes_vol and passes_mc and passes_age:
+                        db.add(p['pool_address'], p['chain'], p['symbol'], p.get('token_address', p['pool_address']))
+                        qualified_count += 1
+                        logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
 
                         # Lulus semua KECUALI umur < 1h — simpan ke pending untuk dinilai semula
                         elif passes_liq and passes_vol and passes_mc and age_hours < 0.5:
