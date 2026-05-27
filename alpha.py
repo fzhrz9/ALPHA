@@ -521,16 +521,16 @@ async def run_bot():
                         qualified_count += 1
                         logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
 
-                        # Lulus semua KECUALI umur < 1h — simpan ke pending untuk dinilai semula
-                        elif passes_liq and passes_vol and passes_mc and age_hours < 0.5:
-                            db.add_pending(
-                                p['pool_address'], p['chain'], p['symbol'],
-                                p.get('token_address', p['pool_address']),
-                                p['liquidity_usd'], p['volume_24h'], p['market_cap'],
-                                p['pool_created_at']
-                            )
-                            pending_new += 1
-                            logging.info(f"   ⏳ PENDING: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.2f}h — menunggu 1h")
+                    # Lulus semua KECUALI umur < 1h — simpan ke pending untuk dinilai semula
+                    elif passes_liq and passes_vol and passes_mc and age_hours < 0.5:
+                        db.add_pending(
+                        p['pool_address'], p['chain'], p['symbol'],
+                        p.get('token_address', p['pool_address']),
+                        p['liquidity_usd'], p['volume_24h'], p['market_cap'],
+                        p['pool_created_at']
+                        )
+                        pending_new += 1
+                        logging.info(f"   ⏳ PENDING: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.2f}h — menunggu 1h")
 
                         else:
                         reasons = []
