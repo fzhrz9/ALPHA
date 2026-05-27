@@ -415,18 +415,31 @@ async def run_bot():
                             except Exception:
                                 age_hours = 999
                         
+                        # 🔥 KRITERIA PREMIUM FILTER
                         if (p['liquidity_usd'] >= 30000 and
                             p['volume_24h'] >= 50000 and
                             100000 <= p['market_cap'] <= 5000000 and
                             age_hours >= 1 and
                             age_hours <= 168):
-                            
+    
                             db.add(p['pool_address'], p['chain'], p['symbol'])
                             qualified_count += 1
                             logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
-                    
-                    logging.info(f"✅ {qualified_count} tokens added to watchlist (qualified from {len(pools)})")
-                    await asyncio.sleep(0.1)
+                            else:
+                                reasons = []
+                        if p['liquidity_usd'] < 30000:
+                            reasons.append(f"Liq: ${p['liquidity_usd']:,.0f} < $30K")
+                        if p['volume_24h'] < 50000:
+                           reasons.append(f"Vol: ${p['volume_24h']:,.0f} < $50K")
+                        if p['market_cap'] < 100000 or p['market_cap'] > 5000000:
+                        if age_hours \u003C 1:     reasons.append(f"MC: ${p['market_cap']:,.0f} not in $100K-$5M")
+                        if age_hours < 1:
+                           reasons.append(f"Age: {age_hours:.1f}h < 1h")
+                        if age_hours > 168:
+                           reasons.append(f"Age: {age_hours:.1f}h > 7d")
+                           logging.info(f"   ⛔ REJECTED: {p['symbol']} ({p['chain'].upper()}) | {', '.join(reasons)}")
+                           logging.info(f"✅ {qualified_count} tokens added to watchlist (qualified from {len(pools)})")
+                               await asyncio.sleep(0.1)
 
                 # 2. ANALYZER
                 if now - last_gecko >= GECKO_LIMIT:
