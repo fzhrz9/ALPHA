@@ -47,8 +47,7 @@ async def health_check_handler(request):
     return web.json_response({"status": "ok", "uptime": time.time() - start_time})
 
 async def init_web_server():
-    """Start mini HTTP server on $PORT"""
-    app = web.Application()
+    """Start mini HTTP server on $PORT"""    app = web.Application()
     app.add_routes([web.get('/health', health_check_handler)])
     runner = web.AppRunner(app)
     await runner.setup()
@@ -98,7 +97,6 @@ class TelegramManager:
         emoji = "⚙️" if level == "INFO" else "⚠️" if level == "WARNING" else "❌"
         alert = f"{emoji} <b>[{level}] SYSTEM LOG</b>\n<pre>{message}</pre>"
         await self._send(ADMIN_CHAT_ID, alert, parse_mode="HTML")
-
     async def _send(self, chat_id, text, parse_mode=None, inline_keyboard=None):
         url = f"{self.base_url}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
@@ -146,6 +144,287 @@ class QuantMath:
         if not candles: return 0
         tpv = sum(((c['h']+c['l']+c['c'])/3)*c['v'] for c in candles)
         vol = sum(c['v'] for c in candles)
+        return tpv/vol if vol > 0 else 0
+    @staticmethod
+    def atr(candles, p=14):
+        if len(candles) < p+1: return 0
+        trs = [max(c['h']-c['l'], abs(c['h']-candles[i-1]['c']), abs(c['l']-candles[i-1]['c'])) 
+               for i, c in enumerate(candles) if i > 0]
+        if not trs: return 0
+        atr = sum(trs[:p])/p
+        for t in trs[p:]: atr = (atr*(p-1)+t)/p
+        return atr
+
+    @staticmethod
+    def cvd(candles):
+        return sum(c['v'] if c['c']>c['o'] else -c['v'] for c in candles)
+
+    @staticmethod
+    def wyckoff_spring(candles, lb=20):
+        if len(candles) < lb: return False
+        recent = candles[-lb:]
+        sl = min(c['l'] for c in recent[:-1])
+        last = candles[-1]
+        return last['c'] > sl and any(c['l'] < sl for c in recent[-5:])
+
+# ==========================================
+# 5. API & SECURITY ENGINES
+# ==========================================
+class DataFetcher:
+    def __init__(self, session): 
+        self.session = session
+
+    async def scan_new_pools(self):
+        """Scan new pools dari GeckoTerminal (semua chain kita: solana, base, bsc)"""
+        all_pools = []
+        chains_to_scan = ['solana', 'base', 'bsc']
+        
+        for chain in chains_to_scan:
+            url = f"https://api.geckoterminal.com/api/v2/networks/{chain}/new_pools?page=1"
+            try:
+                async with self.session.get(url) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        pools = data.get('data', [])
+                        for pool in pools:
+                            attrs = pool.get('attributes', {})
+                            
+                            pool_id = pool.get('id', '')
+                            pool_address = pool_id.replace(f'{chain}_', '') if pool_id.startswith(f'{chain}_') else pool_id
+                            
+                            name = attrs.get('name', 'UNK')
+                            symbol = name.split(' / ')[0].strip() if '/' in name else name
+                                                        all_pools.append({
+                                'chain': chain,
+                                'pool_address': pool_address,
+                                'symbol': symbol,
+                                'price_usd': float(attrs.get('base_token_price_usd', 0) or 0),
+                                'volume_24h': float(attrs.get('volume_usd', {}).get('h24', 0) or 0),
+                                'liquidity_usd': float(attrs.get('reserve_in_usd', 0) or 0),
+                                'market_cap': float(attrs.get('market_cap_usd', 0) or 0),
+                                'pool_created_at': attrs.get('pool_created_at', ''),
+                                'fdv': float(attrs.get('fdv_usd', 0) or 0)
+                            })
+                        logging.info(f"   ✅ {chain.upper()}: Found {len(pools)} new pools")
+                    else:
+                        logging.warning(f"   ⚠️ {chain.upper()}: API returned {r.status}")
+            except Exception as e:
+                logging.error(f"   ❌ {chain.upper()} scan error: {e}")
+            
+            await asyncio.sleep(0.5)
+        
+        return all_pools
+
+    async def gecko_ohlcv(self, net, pool):
+        url = f"https://api.geckoterminal.com/api/v2/networks/{net}/pools/{pool}/ohlcv/minute?aggregate=1&limit=100"
+        try:
+            async with self.session.get(url) as r:
+                if r.status == 200:
+                    raw = (await r.json()).get('data',{}).get('attributes',{}).get('ohlcv_list',[])
+                    return [{'t':x[0],'o':x[1],'h':x[2],'l':x[3],'c':x[4],'v':x[5]} for x in reversed(raw)]
+        except: pass
+        return []
+
+class SecurityGuard:
+    def __init__(self, session): 
+        self.session = session
+        self.chain_map = {'bsc':'56', 'base':'8453', 'solana':'solana'}
+
+    async def audit(self, chain, addr):
+        cid = self.chain_map.get(chain)
+        if not cid: return False, "Chain not supported"
+        url = f"https://api.gopluslabs.io/api/v1/token_security/{cid}?contract_addresses={addr}"
+        try:
+            async with self.session.get(url) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    res = d.get('result', {})
+                    t = res.get(addr.lower(), res.get(addr, {}))
+                    if isinstance(t, dict):
+                        if t.get('is_honeypot')=='1': return False, "Honeypot"
+                        if t.get('is_mintable')=='1': return False, "Mintable"
+                        if float(t.get('buy_tax',0))>0.05: return False, "BuyTax>5%"                        if float(t.get('sell_tax',0))>0.05: return False, "SellTax>5%"
+        except: pass
+        return True, "Secure"
+
+# ==========================================
+# 6. ADVANCED SIGNAL FORMATTER
+# ==========================================
+class SignalFormatter:
+    @staticmethod
+    def calculate_tp_levels(entry_price, atr):
+        tp1 = entry_price + (2.0 * atr)
+        tp2 = entry_price + (3.5 * atr)
+        tp3 = entry_price + (5.0 * atr)
+        return tp1, tp2, tp3
+
+    @staticmethod
+    def get_chain_display_name(chain):
+        return {'solana': 'SOL', 'base': 'BASE', 'bsc': 'BSC'}.get(chain, chain.upper())
+
+    @staticmethod
+    def build_inline_keyboard(chain, pool_address, token_address):
+        keyboard = []
+        
+        if chain == 'solana':
+            bonk_url = f"https://t.me/bonkbot_bot?start=snipe_{token_address}"
+            keyboard.append([{"text": "🟣 Trade with BONK", "url": bonk_url}])
+        elif chain in ['base', 'bsc']:
+            chain_id = '8453' if chain == 'base' else '56'
+            maestro_url = f"https://t.me/MaestroSniperBot?start=buy_{token_address}_{chain_id}"
+            keyboard.append([{"text": "🔵 Trade with MAESTRO", "url": maestro_url}])
+        
+        dexscreener_url = f"https://dexscreener.com/{chain}/{pool_address}"
+        keyboard.append([{"text": "📊 View Chart", "url": dexscreener_url}])
+        
+        if chain == 'solana':
+            rugcheck_url = f"https://rugcheck.xyz/tokens/{token_address}"
+            keyboard.append([{"text": "🔒 RugCheck Security", "url": rugcheck_url}])
+        else:
+            chain_id = '8453' if chain == 'base' else '56'
+            goplus_url = f"https://gopluslabs.io/token-security/{chain_id}/{token_address}"
+            keyboard.append([{"text": "🔒 GoPlus Security", "url": goplus_url}])
+        
+        birdeye_url = f"https://birdeye.so/token/{token_address}?chain={chain}"
+        keyboard.append([{"text": "🦅 Birdeye Analytics", "url": birdeye_url}])
+        
+        return keyboard
+
+    @staticmethod
+    def generate_chart_url(candles, entry, sl, tp1, tp2, tp3, symbol, chain):
+        try:            recent = candles[-30:] if len(candles) >= 30 else candles
+            labels = [datetime.fromtimestamp(c['t']).strftime('%H:%M') for c in recent]
+            prices = [c['c'] for c in recent]
+
+            config = {
+                "type": "line",
+                "data": {
+                    "labels": labels,
+                    "datasets": [{
+                        "label": symbol,
+                        "data": prices,
+                        "borderColor": "#00D4FF",
+                        "backgroundColor": "rgba(0,212,255,0.15)",
+                        "fill": True,
+                        "tension": 0.3,
+                        "pointRadius": 2,
+                        "pointBackgroundColor": "#00D4FF",
+                        "borderWidth": 2
+                    }]
+                },
+                "options": {
+                    "responsive": False,
+                    "animation": False,
+                    "plugins": {
+                        "legend": {"display": False},
+                        "title": {
+                            "display": True,
+                            "text": f"{symbol} ({chain.upper()}) | Alpha Signal",
+                            "color": "#FFFFFF",
+                            "font": {"size": 16, "weight": "bold"}
+                        },
+                        "annotation": {
+                            "annotations": [
+                                {"type": "line", "mode": "horizontal", "scaleID": "y", "value": entry, "borderColor": "#00FF00", "borderWidth": 2, "borderDash": [5,5], "label": {"display": True, "content": f"ENTRY: {entry:.6f}", "position": "start", "backgroundColor": "#00FF00", "color": "#000000"}},
+                                {"type": "line", "mode": "horizontal", "scaleID": "y", "value": sl, "borderColor": "#FF0000", "borderWidth": 2, "borderDash": [5,5], "label": {"display": True, "content": f"SL: {sl:.6f}", "position": "start", "backgroundColor": "#FF0000", "color": "#FFFFFF"}},
+                                {"type": "line", "mode": "horizontal", "scaleID": "y", "value": tp1, "borderColor": "#FFFF00", "borderWidth": 2, "borderDash": [5,5], "label": {"display": True, "content": f"TP1: {tp1:.6f}", "position": "end", "backgroundColor": "#FFFF00", "color": "#000000"}},
+                                {"type": "line", "mode": "horizontal", "scaleID": "y", "value": tp2, "borderColor": "#FFA500", "borderWidth": 2, "borderDash": [5,5], "label": {"display": True, "content": f"TP2: {tp2:.6f}", "position": "end", "backgroundColor": "#FFA500", "color": "#000000"}},
+                                {"type": "line", "mode": "horizontal", "scaleID": "y", "value": tp3, "borderColor": "#9B59B6", "borderWidth": 3, "borderDash": [10,5], "label": {"display": True, "content": f"TP3: {tp3:.6f}", "position": "end", "backgroundColor": "#9B59B6", "color": "#FFFFFF"}}
+                            ]
+                        }
+                    },
+                    "scales": {
+                        "x": {"ticks": {"color": "#AAAAAA"}, "grid": {"color": "rgba(255,255,255,0.05)"}},
+                        "y": {"ticks": {"color": "#AAAAAA"}, "grid": {"color": "rgba(255,255,255,0.05)"}}
+                    }
+                }
+            }
+            return f"https://quickchart.io/chart?c={json.dumps(config)}&w=800&h=500&bkg=%23131722&f=png"
+        except Exception as e:
+            logging.error(f"Chart URL generation failed: {e}")            return None
+
+    @staticmethod
+    def format_premium_signal(symbol, chain, price, vwap, sl, tp1, tp2, tp3, pool_address):
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        chain_display = SignalFormatter.get_chain_display_name(chain)
+        token_address = pool_address
+        
+        message = (
+            f"🔥 <b>ALPHA SIGNAL: {symbol}</b> <i>({chain_display})</i>\n"
+            f"🕒 {ts}\n\n"
+            f"📊 <b>Setup:</b> Wyckoff Spring + VWAP Bounce\n\n"
+            f"📋 <b>CA:</b> <code>{token_address}</code>\n\n"
+            f"💰 <b>Entry Zone:</b> <code>{price:.8f}</code>\n"
+            f"🎯 <b>VWAP Reference:</b> <code>{vwap:.8f}</code>\n"
+            f"🛑 <b>Stop Loss:</b> <code>{sl:.8f}</code>\n\n"
+            f"✅ <b>Take Profit 1:</b> <code>{tp1:.8f}</code> <i>(Conservative)</i>\n"
+            f"✅ <b>Take Profit 2:</b> <code>{tp2:.8f}</code> <i>(Moderate)</i>\n"
+            f"✅ <b>Take Profit 3:</b> <code>{tp3:.8f}</code> <i>(Moonshot)</i>\n\n"
+            f"🔒 <b>Security:</b> ✅ GoPlus Verified\n"
+            f"⚠️ <i>Trade at your own risk. Not financial advice.</i>"
+        )
+        
+        keyboard = SignalFormatter.build_inline_keyboard(chain, pool_address, token_address)
+        return message, keyboard
+
+# ==========================================
+# 7. MAIN ORCHESTRATOR
+# ==========================================
+async def run_bot():
+    logging.info("🚀 ALPHA SIGNAL BOT v2.0 STARTING (WEB SERVICE MODE)")
+    
+    await init_web_server()
+    
+    async with aiohttp.ClientSession() as session:
+        tg = TelegramManager(session)
+        fetcher = DataFetcher(session)
+        security = SecurityGuard(session)
+        db = Database()
+
+        await tg.send_admin_alert("✅ System Online. Monitoring Solana/Base/BSC DEX Spot.", "INFO")
+
+        last_dex = 0
+        last_gecko = 0
+
+        while True:
+            try:
+                now = time.time()
+
+                # ==========================================                # 1. SCANNER (GeckoTerminal New Pools)
+                # ==========================================
+                if now - last_dex >= SCANNER_LIMIT:
+                    last_dex = now
+                    logging.info("🔍 Scanning GeckoTerminal for new pools (SOL/BASE/BSC)...")
+                    pools = await fetcher.scan_new_pools()
+                    logging.info(f"📥 Total {len(pools)} pools found across all chains")
+                    
+                    qualified_count = 0
+                    for p in pools:
+                        age_hours = 0
+                        if p.get('pool_created_at'):
+                            try:
+                                created_str = p['pool_created_at'].replace('Z', '').split('.')[0]
+                                created = datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S")
+                                age_hours = (datetime.utcnow() - created).total_seconds() / 3600
+                            except Exception:
+                                age_hours = 999
+                        
+                        # 🔥 KRITERIA PREMIUM FILTER
+                        if (p['liquidity_usd'] >= 30000 and
+                            p['volume_24h'] >= 50000 and
+                            100000 <= p['market_cap'] <= 5000000 and
+                            age_hours >= 1 and
+                            age_hours <= 168):
+                            
+                            db.add(p['pool_address'], p['chain'], p['symbol'])
+                            qualified_count += 1
+                            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
+                        else:
+                            reasons = []
+                            if p['liquidity_usd'] < 30000:
+                                reasons.append(f"Liq: ${p['liquidity_usd']:,.0f} < $30K")
+                            if p['volume_24h'] < 50000:
+                                reasons.appen        vol = sum(c['v'] for c in candles)
         return tpv/vol if vol > 0 else 0
 
     @staticmethod
