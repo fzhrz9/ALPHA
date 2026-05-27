@@ -280,8 +280,7 @@ class SecurityGuard:
     def __init__(self, session): 
         self.session = session
         self.chain_map = {'bsc':'56', 'base':'8453', 'solana':'solana'}
-
-        async def audit(self, chain, addr):
+    async def audit(self, chain, addr):
         cid = self.chain_map.get(chain)
         if not cid: return False, "Chain not supported"
         url = f"https://api.gopluslabs.io/api/v1/token_security/{cid}?contract_addresses={addr}"
