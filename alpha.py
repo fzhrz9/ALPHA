@@ -147,7 +147,7 @@ class Database:
         self.conn.commit()
 
     def promote_ready_pending(self):
-        """Semak pending pools — promot ke watchlist jika umur sudah >= 1h."""
+        """Semak pending pools — promot ke watchlist jika umur sudah >= 30 minit."""
         rows = self.conn.execute(
             "SELECT pool_address, chain, symbol, token_address, pool_created_at FROM pending"
         ).fetchall()
@@ -159,7 +159,7 @@ class Database:
                 age_hours = (datetime.utcnow() - created).total_seconds() / 3600
             except Exception:
                 age_hours = 999
-            if age_hours >= 0.5:  # Promote bila umur >= 30 minit (was 1h)
+            if age_hours >= 0.5:
                 self.add(pool, chain, symbol, token_address)
                 self.conn.execute("DELETE FROM pending WHERE pool_address=?", (pool,))
                 self.conn.commit()
@@ -291,44 +291,30 @@ class SecurityGuard:
                     res = d.get('result', {})
                     t = res.get(addr.lower(), res.get(addr, {}))
                     if isinstance(t, dict):
-                        # 🔒 LAYER 1: Basic Scam Checks (Existing)
                         if t.get('is_honeypot')=='1': return False, "Honeypot"
                         if t.get('is_mintable')=='1': return False, "Mintable"
                         if float(t.get('buy_tax',0)) > 0.05: return False, "BuyTax>5%"
                         if float(t.get('sell_tax',0)) > 0.05: return False, "SellTax>5%"
-                        
-                        # 🔒 LAYER 2: Liquidity Locked Check (Mathematical: >95% locked)
-                        # Formula: Locked_LP / Total_LP × 100 >= 95%
-                        # Prevents rugpull by dev pulling liquidity
-                        if chain != 'solana':  # Solana format berbeza, skip check ini
+                        if chain != 'solana':
                             lp_holders = t.get('lp_holders', [])
                             if lp_holders:
                                 total_lp = sum(float(h.get('percent', 0)) for h in lp_holders)
-                                locked_lp = sum(float(h.get('percent', 0)) for h in lp_holders 
-                                                if h.get('is_locked') == 1 or h.get('is_burned') == 1)
+                                locked_lp = sum(float(h.get('percent', 0)) for h in lp_holders if h.get('is_locked') == 1 or h.get('is_burned') == 1)
                                 if total_lp > 0:
                                     lock_pct = (locked_lp / total_lp) * 100
                                     if lock_pct < 95:
-                                        return False, f"LP only {lock_pct:.1f}% locked (need >=95%)"
-                        
-                        # 🔒 LAYER 3: Top 10 Holders Concentration (Mathematical: <30%)
-                        # Formula: Sum(Holder_1...10_Percent) < 30%
-                        # Prevents whale dump on retail buyers
+                                        return False, f"LP {lock_pct:.1f}%<95%"
                         holders = t.get('holders', [])
                         if len(holders) >= 10:
                             top10_pct = sum(float(h.get('percent', 0)) for h in holders[:10]) * 100
                             if top10_pct > 30:
-                                return False, f"Top10 Holders: {top10_pct:.1f}% (whale risk >30%)"
-                        
-                        # 🔒 LAYER 4: Honeypot Simulation (GoPlus advanced check)
+                                return False, f"Top10 {top10_pct:.1f}%>30%"
                         if t.get('honeypot_with_same_type') == '1':
-                            return False, "Honeypot Simulation Failed"
-                            
+                            return False, "Honeypot Sim"
         except Exception as e:
             logging.error(f"GoPlus API error for {addr}: {e}")
             return False, "API Error"
         return True, "Secure"
-
 # ==========================================
 # 6. ADVANCED SIGNAL FORMATTER
 # ==========================================
@@ -490,8 +476,6 @@ async def run_bot():
                     qualified_count = 0
                     pending_new = 0
                     for p in pools:
-
-                        # Tolak data tidak sah — liquidity negatif mustahil secara matematik
                         if p['liquidity_usd'] < 0:
                             logging.info(f"   🚫 INVALID DATA: {p['symbol']} ({p['chain'].upper()}) | Liq: ${p['liquidity_usd']:,.0f} (negatif)")
                             continue
@@ -505,53 +489,45 @@ async def run_bot():
                             except Exception:
                                 age_hours = 999
 
-                    # MATHEMATICAL THRESHOLDS (Real Values)
-                    # Liq: $10K → $500 trade = 5% slippage max
-                    # Vol: $20K → Vol/Liq ratio > 2.0 (healthy)
-                    # MC: $30K minimum (no upper limit for moonshot potential)
-                    # Age: 0.5h (30 min) — 80% rugpulls happen in first 15 min
-                    passes_liq = p['liquidity_usd'] >= 10000
-                    passes_vol = p['volume_24h'] >= 20000
-                    passes_mc = p['market_cap'] >= 30000
-                    passes_age = age_hours >= 0.5
+                        passes_liq = p['liquidity_usd'] >= 10000
+                        passes_vol = p['volume_24h'] >= 20000
+                        passes_mc = p['market_cap'] >= 30000
+                        passes_age = age_hours >= 0.5
 
-                    # Semua kriteria lulus — masuk watchlist terus
-                    if passes_liq and passes_vol and passes_mc and passes_age:
-                        db.add(p['pool_address'], p['chain'], p['symbol'], p.get('token_address', p['pool_address']))
-                        qualified_count += 1
-                        logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
+                        if passes_liq and passes_vol and passes_mc and passes_age:
+                            db.add(p['pool_address'], p['chain'], p['symbol'], p.get('token_address', p['pool_address']))
+                            qualified_count += 1
+                            logging.info(f"   🎯 QUALIFIED: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.1f}h")
 
-                    # Lulus semua KECUALI umur < 1h — simpan ke pending untuk dinilai semula
-                    elif passes_liq and passes_vol and passes_mc and age_hours < 0.5:
-                        db.add_pending(
-                        p['pool_address'], p['chain'], p['symbol'],
-                        p.get('token_address', p['pool_address']),
-                        p['liquidity_usd'], p['volume_24h'], p['market_cap'],
-                        p['pool_created_at']
-                        )
-                        pending_new += 1
-                        logging.info(f"   ⏳ PENDING: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.2f}h — menunggu 1h")
+                        elif passes_liq and passes_vol and passes_mc and age_hours < 0.5:
+                            db.add_pending(
+                                p['pool_address'], p['chain'], p['symbol'],
+                                p.get('token_address', p['pool_address']),
+                                p['liquidity_usd'], p['volume_24h'], p['market_cap'],
+                                p['pool_created_at']
+                            )
+                            pending_new += 1
+                            logging.info(f"   ⏳ PENDING: {p['symbol']} ({p['chain'].upper()}) | MC: ${p['market_cap']:,.0f} | Liq: ${p['liquidity_usd']:,.0f} | Age: {age_hours:.2f}h")
 
-                        else:
+                    else:
                         reasons = []
                         if not passes_liq:
-                            reasons.append(f"Liq: ${p['liquidity_usd']:,.0f} < $10K (need 5% max slippage)")
+                            reasons.append(f"Liq: ${p['liquidity_usd']:,.0f} < $10K")
                         if not passes_vol:
-                            reasons.append(f"Vol: ${p['volume_24h']:,.0f} < $20K (need Vol/Liq>2.0)")
+                            reasons.append(f"Vol: ${p['volume_24h']:,.0f} < $20K")
                         if not passes_mc:
-                            reasons.append(f"MC: ${p['market_cap']:,.0f} < $30K (too risky)")
+                            reasons.append(f"MC: ${p['market_cap']:,.0f} < $30K")
                         if age_hours < 0.5:
-                            reasons.append(f"Age: {age_hours:.2f}h < 30min (rugpull risk)")
-                            logging.info(f"   ⛔ REJECTED: {p['symbol']} ({p['chain'].upper()}) | {', '.join(reasons)}")
+                            reasons.append(f"Age: {age_hours:.2f}h < 30min")
+                        logging.info(f"   ⛔ REJECTED: {p['symbol']} ({p['chain'].upper()}) | {', '.join(reasons)}")
 
-                    # Promot pool dari pending yang sudah matang (umur >= 1h)
-                    promoted = db.promote_ready_pending()
-                    for sym, chn in promoted:
-                        logging.info(f"   🚀 PROMOTED: {sym} ({chn.upper()}) — umur kini >= 1h, masuk watchlist")
-                        qualified_count += 1
+                promoted = db.promote_ready_pending()
+                for sym, chn in promoted:
+                    logging.info(f"   🚀 PROMOTED: {sym} ({chn.upper()}) — umur >= 30min")
+                    qualified_count += 1
 
-                    logging.info(f"✅ {qualified_count} tokens ke watchlist | ⏳ {pending_new} baru pending | 📋 Pending queue: {db.pending_count()}")
-                    await asyncio.sleep(0.1)
+                logging.info(f"✅ {qualified_count} tokens ke watchlist | ⏳ {pending_new} baru pending | 📋 Pending queue: {db.pending_count()}")
+                await asyncio.sleep(0.1)
 
                 # ==========================================
                 # 2. ANALYZER (GeckoTerminal Polling)
