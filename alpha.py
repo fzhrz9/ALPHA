@@ -47,9 +47,9 @@ async def health_check_handler(request):
     return web.json_response({"status": "ok", "uptime": time.time() - start_time})
 
 async def init_web_server():
-    """Start mini HTTP server on $PORT"""    app = web.Application()
+    "Start mini HTTP server on $PORT"    app = web.Application()
     app.add_routes([web.get('/health', health_check_handler)])
-    runner = web.AppRunner(app)
+    \"\"\"Start mini HTTP server on $PORT\"\"\"    app = web.Application()runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
