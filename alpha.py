@@ -87,7 +87,7 @@ HEAVYWEIGHTS = {
 # ==========================================
 # DATABASE SQLITE + TUNING PARAMS
 # ==========================================
-DB_NAME = "nova7_data.db"
+DB_NAME = "/tmp/nova7_data.db"
 db_lock = threading.Lock()
 SCHEMA_VERSION = 2
 
