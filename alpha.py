@@ -33,6 +33,7 @@ def alert_admin(error_text):
 IS_SCANNING = True
 WARM_POOL = {}  # Watchlist Sementara (Skor 3/5)
 SENT_POOL = {}  # Anti-Spam / Cooldown Koin Terhantar
+ACTIVE_TRADES = {} # <-- LACI BARU: Simpan signal aktif untuk monitor TP/SL
 
 # PARAMETER PENAPISAN (SWEET SPOT)
 MC_MIN, MC_MAX = 1000000, 500000000
@@ -307,7 +308,21 @@ def send_signal(coin_info, dex_data, verdict="ALPHA ACTIVE", target_chat_id=VIP_
 
 🦅 <b>VERDICT : {verdict}</b>
 """
-    bot.send_message(target_chat_id, msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+    # --- TANGKAP ID MESEJ UNTUK AUTO-REPLY ---
+    try:
+        sent_msg = bot.send_message(target_chat_id, msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        
+        # Simpan data ke dalam laci pemantauan (ACTIVE_TRADES)
+        ACTIVE_TRADES[coin_info['contract_address']] = {
+            'message_id': sent_msg.message_id,
+            'symbol': sym,
+            'entry': entry,
+            'sl': sl,
+            'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+            'tp1_hit': False, 'tp2_hit': False, 'tp3_hit': False
+        }
+    except Exception as e:
+        print(f"[!] Gagal hantar signal ke Telegram: {e}")
 
 # =====================================================================
 # 8. SCANNER ENGINES & WATCHLIST/SPAM PROCESSOR
@@ -355,6 +370,52 @@ def clean_cooldown_pool():
     now = time.time()
     expired = [sym for sym, ts in SENT_POOL.items() if now - ts > 3600]
     for sym in expired: SENT_POOL.pop(sym, None)
+
+def monitor_active_trades():
+    global ACTIVE_TRADES
+    if not ACTIVE_TRADES: return
+    
+    print(f"\n[📈 TRADE MONITOR] Menyemak harga terkini untuk {len(ACTIVE_TRADES)} posisi aktif...")
+    to_remove = []
+    
+    for ca, trade in ACTIVE_TRADES.items():
+        try:
+            dex_data = get_dexscreener_data(ca, search_type="ca")
+            if not dex_data: continue
+            
+            current_price = dex_data['price_usd']
+            sym = trade['symbol']
+            msg_id = trade['message_id']
+            
+            # --- CEK TAKE PROFIT (TP) ---
+            if current_price >= trade['tp1'] and not trade['tp1_hit']:
+                trade['tp1_hit'] = True
+                reply_msg = f"✅ <b>{sym}</b> — TP1 SECURED!\nAlihkan SL ke Break-Even SEKARANG di <code>${format_crypto_val(trade['entry'])}</code>"
+                bot.send_message(VIP_CHANNEL_ID, reply_msg, reply_to_message_id=msg_id, parse_mode="HTML")
+                
+            if current_price >= trade['tp2'] and not trade['tp2_hit']:
+                trade['tp2_hit'] = True
+                reply_msg = f"✅ <b>{sym}</b> — TP2 SECURED!\nTrail SL ke TP1 di <code>${format_crypto_val(trade['tp1'])}</code>"
+                bot.send_message(VIP_CHANNEL_ID, reply_msg, reply_to_message_id=msg_id, parse_mode="HTML")
+                
+            if current_price >= trade['tp3'] and not trade['tp3_hit']:
+                trade['tp3_hit'] = True
+                reply_msg = f"🏁 <b>{sym}</b> — TP3 CLOSED PROFIT!\nJualan terakhir di <code>${format_crypto_val(current_price)}</code>"
+                bot.send_message(VIP_CHANNEL_ID, reply_msg, reply_to_message_id=msg_id, parse_mode="HTML")
+                to_remove.append(ca) # Tutup trade lepas TP3 Hit
+                
+            # --- CEK STOP LOSS (SL) ---
+            elif current_price <= trade['sl']:
+                reply_msg = f"❌ <b>{sym}</b> — STOP LOSS HIT.\nPergerakan pasaran berubah arah. Trade ditutup pada <code>${format_crypto_val(current_price)}</code>."
+                bot.send_message(VIP_CHANNEL_ID, reply_msg, reply_to_message_id=msg_id, parse_mode="HTML")
+                to_remove.append(ca) # Tutup trade lepas SL Hit
+                
+        except Exception as e:
+            print(f"Ralat pantau {ca}: {e}")
+            
+    # Buang trade yang dah selesai dari memori
+    for ca in to_remove:
+        ACTIVE_TRADES.pop(ca, None)
 
 def run_live_scan(categories, max_coins=15, engine_label="ENJIN"):
     global WARM_POOL, SENT_POOL
@@ -486,7 +547,12 @@ class RenderHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
 
 def run_scheduler():
+    # Enjin Pengimbas Utama (Scan pasaran setiap 10 minit)
     schedule.every(10).minutes.do(lambda: threading.Thread(target=main_job).start())
+    
+    # Enjin Pemantau Trade (Semak harga TP/SL setiap 3 minit)
+    schedule.every(3).minutes.do(lambda: threading.Thread(target=monitor_active_trades).start())
+    
     while True:
         try: schedule.run_pending()
         except Exception as e: print(f"\n[⚠️] Ralat Penjadualan: {e}.")
