@@ -136,7 +136,7 @@ def execute_sniper_protocol(dex_data):
 # =====================================================================
 def calculate_rsi_fibo_live(network, pair_address, current_live_price):
     try:
-        if not pair_address: return "N/A", "N/A"
+        if not pair_address: return "N/A", "N/A", 0
         
         net_map = {'solana': 'solana', 'base': 'base', 'ton': 'ton', 'sui': 'sui', 'ethereum': 'eth', 'bsc': 'bsc'}
         gt_net = net_map.get(network.lower(), network.lower())
@@ -146,11 +146,11 @@ def calculate_rsi_fibo_live(network, pair_address, current_live_price):
         ohlcv_list = res.get('data', {}).get('attributes', {}).get('ohlcv_list', [])
         
         if len(ohlcv_list) < 14:
-            return "Koin Baru (Data < 14D)", "Data Tidak Mencukupi"
+            return "Koin Baru (Data < 14D)", "Data Tidak Mencukupi", 0
         
         closes = [float(x[4]) for x in ohlcv_list[::-1]]
-        highs = [float(x[2]) for x in ohlcv_list]
-        lows = [float(x[3]) for x in ohlcv_list]
+        highs = [float(x[2]) for x in ohlcv_list[::-1]]
+        lows = [float(x[3]) for x in ohlcv_list[::-1]]
         
         # --- FORMULA RSI ---
         gains, losses = [], []
@@ -169,27 +169,31 @@ def calculate_rsi_fibo_live(network, pair_address, current_live_price):
         rsi_val = 100 if avg_loss == 0 else 100 - (100 / (1 + (avg_gain / avg_loss)))
         rsi_status = f"{rsi_val:.1f} 🟢 (Oversold)" if rsi_val <= 35 else f"{rsi_val:.1f} 🔴 (Overbought)" if rsi_val >= 70 else f"{rsi_val:.1f} ⚪ (Neutral)"
         
-        # --- FORMULA FIBO REAL-TIME HYBRID ---
+        # --- FORMULA FIBO ---
         max_high = max(highs)
         min_low = min(lows)
         total_range = max_high - min_low
-        
         fibo_618 = max_high - (0.618 * total_range)
         fibo_50 = max_high - (0.50 * total_range)
         
-        # KITA GUNA HARGA DEXSCREENER SEBAGAI PEMICU!
-        if current_live_price <= min_low:
-            fibo_status = "🚨 Menembusi Lantai Support Utama!"
-        elif abs(current_live_price - fibo_618) / fibo_618 <= 0.04:
-            fibo_status = "🔥 Menguji Golden Pocket (0.618) - Reversal Kuat!"
-        elif current_live_price >= max_high:
-            fibo_status = "🚀 Price Discovery Mode (Breakout High)!"
-        else:
-            fibo_status = f"S: ${min_low:.4f} | R: ${max_high:.4f} (Mid: 0.50 @ ${fibo_50:.4f})"
+        if current_live_price <= min_low: fibo_status = "🚨 Menembusi Lantai Support Utama!"
+        elif abs(current_live_price - fibo_618) / fibo_618 <= 0.04: fibo_status = "🔥 Menguji Golden Pocket (0.618) - Reversal Kuat!"
+        elif current_live_price >= max_high: fibo_status = "🚀 Price Discovery Mode (Breakout High)!"
+        else: fibo_status = f"S: ${min_low:.4f} | R: ${max_high:.4f}"
+
+        # --- FORMULA ATR (AVERAGE TRUE RANGE 14-HARI) ---
+        trs = []
+        for i in range(1, len(closes)):
+            h = highs[i]
+            l = lows[i]
+            pc = closes[i-1]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        atr_val = sum(trs[-14:]) / 14 if len(trs) >= 14 else (sum(trs)/len(trs) if trs else 0)
             
-        return rsi_status, fibo_status
+        return rsi_status, fibo_status, atr_val
     except:
-        return "N/A (API Error)", "N/A (API Error)"
+        return "N/A (API Error)", "N/A (API Error)", 0
 
 # =====================================================================
 # 4. ALGO TRADE SETUP & BROADCAST UI 
@@ -198,18 +202,34 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
     sec_status = verify_security_live(dex_data['network'], coin_info['contract_address'])
     is_sol = dex_data['network'].lower() in ['solana', 'sol']
     
-    # --- PANGGIL ENJIN QUANT RSI & FIBO REAL-TIME (HYBRID) ---
-    live_rsi, live_fibo = calculate_rsi_fibo_live(dex_data['network'], dex_data.get('pair_address', ''), dex_data['price_usd'])
+    # Terima 3 nilai sekarang: RSI, Fibo, dan ATR
+    live_rsi, live_fibo, atr = calculate_rsi_fibo_live(dex_data['network'], dex_data.get('pair_address', ''), dex_data['price_usd'])
     
     buy_bot_name = "🔫 BonkBot" if is_sol else "🦄 Maestro"
     buy_bot_link = f"https://t.me/{'bonkbot_bot' if is_sol else 'maestro'}?start={coin_info['contract_address']}"
     chain_url = dex_data.get('chain_raw', 'search?q=').lower()
 
     entry = dex_data['price_usd']
-    sl = entry * 0.92  
-    tp1 = entry * 1.10 
-    tp2 = entry * 1.25 
-    tp3 = entry * 1.50 
+    
+    # ==========================================================
+    # 🧮 INSTITUTIONAL DYNAMIC RISK MANAGEMENT (ATR + R:R)
+    # ==========================================================
+    # Intraday Buffer: Kita ambil 15% dari Daily ATR untuk SL Sniper (Elak kena sweep jarum)
+    intraday_atr = atr * 0.15 if atr > 0 else (entry * 0.08) # Fallback 8% kalau koin baru (tiada data ATR)
+    
+    sl = entry - intraday_atr
+    risk_amount = entry - sl
+    sl_pct = ((entry - sl) / entry) * 100
+    
+    # TP Berdasarkan Nisbah R:R (Bukan tekaan statik)
+    tp1 = entry + (risk_amount * 1.5) # R:R 1:1.5 (Target Realistik)
+    tp2 = entry + (risk_amount * 3.0) # R:R 1:3.0 (Target Optimum)
+    tp3 = entry + (risk_amount * 5.0) # R:R 1:5.0 (Moonbag/Runner)
+
+    tp1_pct = ((tp1 - entry) / entry) * 100
+    tp2_pct = ((tp2 - entry) / entry) * 100
+    tp3_pct = ((tp3 - entry) / entry) * 100
+    # ==========================================================
     
     liq = max(dex_data['liquidity'], 1)
     turnover_ratio = dex_data['volume_24h'] / liq
@@ -233,24 +253,23 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
 • <b>Sniper (5M) :</b> <code>{m5_sign}{dex_data['price_change_5m']}%</code> 🟢
 • <b>RSI (14D) :</b> <code>{live_rsi}</code>
 • <b>Fibo Level :</b> <code>{live_fibo}</code>
+• <b>Volatility (ATR) :</b> <code>${atr:.4f} / Day</code>
 
-🎯 <b>TRADE SETUP (ALGO-GENERATED)</b>
+🎯 <b>TRADE SETUP (DYNAMIC ATR RISK:REWARD)</b>
 • <b>ENTRY ZONE :</b> <code>${entry:.6f}</code>
-• <b>STOP LOSS :</b> <code>${sl:.6f}</code> <code>(-8.0%)</code> 🚨
-• <b>TAKE PROFIT 1 :</b> <code>${tp1:.6f}</code> <code>(+10%)</code>
-• <b>TAKE PROFIT 2 :</b> <code>${tp2:.6f}</code> <code>(+25%)</code>
-• <b>TAKE PROFIT 3 :</b> <code>${tp3:.6f}</code> <code>(+50%)</code> 🚀
+• <b>STOP LOSS :</b> <code>${sl:.6f}</code> <code>(-{sl_pct:.1f}%)</code> 🚨 <i>(Below Sweep Zone)</i>
+• <b>TAKE PROFIT 1 :</b> <code>${tp1:.6f}</code> <code>(+{tp1_pct:.1f}%)</code> <i>[RR 1:1.5]</i>
+• <b>TAKE PROFIT 2 :</b> <code>${tp2:.6f}</code> <code>(+{tp2_pct:.1f}%)</code> <i>[RR 1:3.0]</i>
+• <b>TAKE PROFIT 3 :</b> <code>${tp3:.6f}</code> <code>(+{tp3_pct:.1f}%)</code> 🚀 <i>[RR 1:5.0]</i>
 
 🌊 <b>ORDER FLOW & SECURITY</b>
 • <b>Turnover Ratio :</b> <code>{turnover_ratio:.1f}x Volume/Liquidity</code> 🔥
 • <b>Token Age :</b> <code>{dex_data['age_display']}</code>
-• <b>Network :</b> <code>{dex_data['network'].capitalize()}</code> | <b>Liquidity :</b> <code>${dex_data['liquidity'] / 1e6:.1f}M</code> 🟢
 • <b>Live Audit :</b> <b>{sec_status}</b>
 
 ⚡ <b>VERDICT : {verdict}</b>
-<i>Entry divalidasi oleh momentum pantulan M5 & capital turnover.</i>
 """
-    
+# (Biarkan bahagian butang InlineKeyboardMarkup kekal seperti biasa)   
     markup = InlineKeyboardMarkup()
     sym = coin_info['symbol'].upper()
     
