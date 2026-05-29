@@ -371,7 +371,7 @@ class RenderHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
 
 def run_scheduler():
-    schedule.every(15).minutes.do(lambda: threading.Thread(target=main_job).start())
+    schedule.every(10).minutes.do(lambda: threading.Thread(target=main_job).start())
     while True:
         try: schedule.run_pending()
         except Exception as e: print(f"\n[⚠️] Ralat Penjadualan: {e}. Meneruskan kitaran...")
