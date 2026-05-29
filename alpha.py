@@ -30,11 +30,12 @@ def alert_admin(error_text):
         print(f"[!] Gagal hantar amaran ke Telegram: {e}")
 
 IS_SCANNING = True
-CURRENT_ENGINE = 1  
+IS_SCANNING = True
+CURRENT_ENGINE = 2  
 
 # PARAMETER PENAPISAN (SWEET SPOT YANG DILONGGARKAN)
-MC_MIN, MC_MAX = 5000000, 500000000
-MIN_LIQUIDITY = 150000
+MC_MIN, MC_MAX = 1000000, 500000000
+MIN_LIQUIDITY = 100000
 MIN_VOL_MC_RATIO = 0.05
 MIN_24H_CHANGE = 5.0
 MAX_1H_CHANGE = -1.0   
@@ -129,19 +130,46 @@ def verify_security_live(network, contract_address):
     except: return "✅ VERIFIED"
 
 def execute_sniper_protocol(dex_data):
-    # Mengembalikan (Status Lulus/Gagal, Sebab)
+    # 1. SYARAT VETO (KESELAMATAN & SAIZ WAJIB LULUS)
     if not (MC_MIN <= dex_data['market_cap'] <= MC_MAX): 
-        return False, f"MC Luar Julat (${dex_data['market_cap']/1e6:.1f}M)"
+        return False, f"VETO GAGAL: MC Luar Julat (${dex_data['market_cap']/1e6:.1f}M)", False
     if dex_data['liquidity'] < MIN_LIQUIDITY: 
-        return False, f"Kecairan Rendah (${dex_data['liquidity']/1e3:.1f}K)"
-    if dex_data['market_cap'] > 0 and (dex_data['volume_24h'] / dex_data['market_cap']) < MIN_VOL_MC_RATIO: 
-        return False, f"Vol/MC < 5% ({(dex_data['volume_24h']/dex_data['market_cap']):.2f})"
-    if dex_data['price_change_24h'] < MIN_24H_CHANGE: 
-        return False, f"Trend 24H Merah ({dex_data['price_change_24h']}%)"
-    if dex_data['price_change_5m'] <= 0.5: 
-        return False, f"Reversal 5M Lemah ({dex_data['price_change_5m']}%)"
+        return False, f"VETO GAGAL: Kecairan Rendah (${dex_data['liquidity']/1e3:.1f}K)", False
     
-    return True, "LULUS SYARAT 🎯"
+    # Kalau sampai sini, koin dah selamat dari scam. Automatik dapat 2 Markah!
+    score = 2
+    failed_reasons = []
+
+    # 2. SYARAT TEKNIKAL (Pengumpulan 3 Markah)
+    if dex_data['market_cap'] > 0 and (dex_data['volume_24h'] / dex_data['market_cap']) >= MIN_VOL_MC_RATIO:
+        score += 1
+    else:
+        failed_reasons.append("Vol < 5%")
+        
+    if dex_data['price_change_24h'] >= MIN_24H_CHANGE:
+        score += 1
+    else:
+        failed_reasons.append("Trend 24H Merah")
+        
+    if dex_data['price_change_5m'] > 0.5:
+        score += 1
+    else:
+        failed_reasons.append("Tiada 5M Reversal")
+
+    reason_msg = " | ".join(failed_reasons) if failed_reasons else "LULUS BERSIH 🎯"
+
+    # 3. KEPUTUSAN (Sistem 3/5 dan 4/5 Kau)
+    if score >= 4:
+        # LULUS MINIMUM (4/5 atau 5/5): Tembak Signal Telegram!
+        return True, f"Skor {score}/5: {reason_msg}", False 
+        
+    elif score == 3:
+        # KELAS MENENGAH (3/5): Masuk Watchlist / Warm Pool
+        return False, f"Skor {score}/5 (Watchlist): {reason_msg}", True 
+        
+    else:
+        # GAGAL KESELURUHAN (2/5): Buang terus
+        return False, f"Skor {score}/5 (Ditolak): {reason_msg}", False
 # =====================================================================
 # ENJIN QUANT RSI & FIBONACCI (HYBRID)
 # =====================================================================
@@ -309,88 +337,109 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
 # =====================================================================
 # 5. ENJIN PENGIMBAS (LOGIK PENCARIAN SIMBOL KEKAL)
 # =====================================================================
+def process_warm_pool():
+    global WARM_POOL
+    if not WARM_POOL: return
+    
+    print(f"\n[👀 WARM POOL] Menyemak {len(WARM_POOL)} token dalam Watchlist...")
+    to_remove = []
+    
+    for sym, timestamp in WARM_POOL.items():
+        # Buang dari watchlist jika dah lebih 1 jam (Expired) untuk jimat RAM
+        if time.time() - timestamp > 3600:
+            to_remove.append(sym)
+            continue
+            
+        dex_data = get_dexscreener_data(sym, search_type="symbol")
+        if not dex_data: continue
+        
+        is_passed, reason, is_warm = execute_sniper_protocol(dex_data)
+        
+        if is_passed:
+            print(f"   🔥 [WATCHLIST HIT] Koin {sym.upper()} meletup dari Warm Pool!")
+            c_info = {
+                'name': dex_data['name'], 'symbol': dex_data['symbol'], 
+                'id': dex_data['name'].lower().replace(" ", "-"), 'contract_address': dex_data['contract_address'], 
+                'narrative': "🔥 WATCHLIST BREAKOUT", 'market_cap_rank': "N/A"
+            }
+            send_signal(c_info, dex_data, verdict="WATCHLIST SNIPER 🎯", target_chat_id=VIP_CHANNEL_ID)
+            to_remove.append(sym) # Buang lepas berjaya tembak signal
+        elif not is_warm:
+            # Kalau syarat macro tiba-tiba rosak (contoh: volume jatuh), buang dari watchlist
+            to_remove.append(sym)
+            
+    # Kemaskini memori (Buang yang dah expired/ditembak)
+    for sym in to_remove:
+        WARM_POOL.pop(sym, None)
+
 def run_live_scan(categories, max_coins=15, engine_label="ENJIN"):
+    global WARM_POOL
     try:
         for cat in categories:
-            print(f"\n[📡 {engine_label}] Menyemak Sektor: {cat.upper()} (Had: Top {max_coins} Token)...")
-            coins = get_coins_in_category(cat, per_page=max_coins)
+            print(f"\n[📡 {engine_label}] Menyemak Sektor: {cat.upper()}...")
+            # Kita paksa CoinGecko tarik per_page=50, supaya kita ada peluang jumpa koin kecil di bawah radar
+            coins = get_coins_in_category(cat, per_page=50)
             
-            if not coins: 
-                print(f"   [!] Sektor {cat.upper()} tiada respon. Seterusnya...")
-                continue
-                
-            stats = {'scanned': 0, 'passed': 0, 'reasons': {}} # Perekod Ringkasan
+            if not coins: continue
             
-            for coin in coins:
+            stats = {'scanned': 0, 'passed': 0, 'warm': 0, 'reasons': {}} 
+            
+            for coin in coins[:max_coins]: # Hadkan gelung mengikut max_coins
                 sym = coin['symbol']
+                # Jangan bazir masa kalau koin dah ada dalam watchlist
+                if sym in WARM_POOL: continue 
+                
                 dex_data = get_dexscreener_data(sym, search_type="symbol")
                 if not dex_data: continue
                 
                 stats['scanned'] += 1
-                
-                # Terima dua nilai dari enjin tapisan
-                is_passed, reason = execute_sniper_protocol(dex_data)
+                is_passed, reason, is_warm = execute_sniper_protocol(dex_data)
                 
                 if is_passed:
                     stats['passed'] += 1
-                    print(f"   🔥 [LULUS] Signal ditemui untuk {sym.upper()}!")
-                    
-                    raw_rank = coin.get('market_cap_rank') or coin.get('rank')
-                    final_rank = str(raw_rank) if raw_rank and str(raw_rank).isdigit() else "N/A"
-                    
                     c_info = {
-                        'name': dex_data['name'], 
-                        'symbol': dex_data['symbol'], 
+                        'name': dex_data['name'], 'symbol': dex_data['symbol'], 
                         'id': coin.get('id', coin['name'].lower().replace(" ", "-")), 
                         'contract_address': dex_data['contract_address'], 
-                        'narrative': f"{engine_label} | {cat}", 
-                        'market_cap_rank': final_rank
+                        'narrative': f"{engine_label} | {cat}", 'market_cap_rank': str(coin.get('market_cap_rank', 'N/A'))
                     }
                     send_signal(c_info, dex_data, verdict=f"{engine_label} PRO 🎯", target_chat_id=VIP_CHANNEL_ID)
+                elif is_warm:
+                    # Masukkan ke dalam memori WARM POOL
+                    WARM_POOL[sym] = time.time()
+                    stats['warm'] += 1
                 else:
-                    # Kumpul sebab-sebab koin ditolak
                     stats['reasons'][reason] = stats['reasons'].get(reason, 0) + 1
             
-            # --- PAPARAN RINGKASAN LOG DI RENDER ---
+            # --- PAPARAN LOG ---
             print(f"   📊 [RINGKASAN SEKTOR {cat.upper()}]")
             print(f"      - Token Diimbas : {stats['scanned']}")
             print(f"      - Lulus Signal  : {stats['passed']}")
-            if stats['reasons']:
-                print(f"      - Punca Koin Ditolak:")
-                for r, count in sorted(stats['reasons'].items(), key=lambda item: item[1], reverse=True):
-                    print(f"         > {r} = {count} token")
-            
-            time.sleep(5) # Jeda keselamatan pelayan API
+            print(f"      - Masuk Watchlist : {stats['warm']}")
+            time.sleep(5) 
 
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"[!] RALAT KRITIKAL DALAM {engine_label}:\n{error_details}")
-        alert_admin(f"Kerosakan Semasa Imbasan {engine_label}:\n{str(e)}\n\nSila semak Render Logs.") 
+        alert_admin(f"Kerosakan Semasa Imbasan {engine_label}:\n{str(e)}")
 
 def main_job():
     global IS_SCANNING
     if not IS_SCANNING: return
-    
     try:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Kitaran Gergasi Auto-Scan Bermula...")
         
-        # === 🚀 ENJIN 1: FOKUS NARATIF TETAP ===
-        print("\n>>> Memulakan ENJIN 1 (Naratif Teras)...")
-        run_live_scan(CORE_NARRATIVES, max_coins=15, engine_label="ENJIN 1")
+        # 1. PERIKSA WATCHLIST DULU
+        process_warm_pool()
         
-        # === 🔥 ENJIN 2: FOKUS TOP 3 TRENDING SEKTOR ===
-        print("\n>>> Memulakan ENJIN 2 (Hype Semasa Harian)...")
+        # 2. ENJIN 1: NARATIF TERAS
+        run_live_scan(CORE_NARRATIVES, max_coins=20, engine_label="ENJIN 1")
+        
+        # 3. ENJIN 2: HYPE HARIAN
         trending_cats = get_trending_categories()
-        if trending_cats:
-            run_live_scan(trending_cats, max_coins=5, engine_label="ENJIN 2")
-        else:
-            print("[!] Enjin 2 Gagal: Masalah sambungan senarai trending.")
+        if trending_cats: run_live_scan(trending_cats, max_coins=10, engine_label="ENJIN 2")
             
     except Exception as e:
-        error_details = traceback.format_exc()
         alert_admin(f"CRASH KESELURUHAN (MAIN JOB):\n{str(e)}")
-        print(f"[!] SYSTEM CRASH:\n{error_details}")
-
 # =====================================================================
 # 6. TELEGRAM COMMANDS & BULLETPROOF SCHEDULER 
 # =====================================================================
