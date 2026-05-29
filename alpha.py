@@ -5,6 +5,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import schedule
 import threading
+import traceback
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -18,6 +19,15 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 CG_API_KEY = os.environ.get("CG_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+import traceback # Pastikan tambah 'import traceback' di bahagian paling atas (tempat import module)
+
+def alert_admin(error_text):
+    """Hantar mesej ralat terus ke Telegram Admin"""
+    try:
+        msg = f"🚨 <b>SYSTEM ERROR DETECTED</b> 🚨\n\n<pre>{error_text}</pre>"
+        bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
+    except Exception as e:
+        print(f"[!] Gagal hantar amaran ke Telegram: {e}")
 
 IS_SCANNING = True
 CURRENT_ENGINE = 1  
@@ -119,18 +129,19 @@ def verify_security_live(network, contract_address):
     except: return "✅ VERIFIED"
 
 def execute_sniper_protocol(dex_data):
-    if not (MC_MIN <= dex_data['market_cap'] <= MC_MAX): return False
-    if dex_data['liquidity'] < MIN_LIQUIDITY: return False
-    if dex_data['market_cap'] > 0 and (dex_data['volume_24h'] / dex_data['market_cap']) < MIN_VOL_MC_RATIO: return False
-    if dex_data['price_change_24h'] < MIN_24H_CHANGE: return False
+    # Mengembalikan (Status Lulus/Gagal, Sebab)
+    if not (MC_MIN <= dex_data['market_cap'] <= MC_MAX): 
+        return False, f"MC Luar Julat (${dex_data['market_cap']/1e6:.1f}M)"
+    if dex_data['liquidity'] < MIN_LIQUIDITY: 
+        return False, f"Kecairan Rendah (${dex_data['liquidity']/1e3:.1f}K)"
+    if dex_data['market_cap'] > 0 and (dex_data['volume_24h'] / dex_data['market_cap']) < MIN_VOL_MC_RATIO: 
+        return False, f"Vol/MC < 5% ({(dex_data['volume_24h']/dex_data['market_cap']):.2f})"
+    if dex_data['price_change_24h'] < MIN_24H_CHANGE: 
+        return False, f"Trend 24H Merah ({dex_data['price_change_24h']}%)"
+    if dex_data['price_change_5m'] <= 0.5: 
+        return False, f"Reversal 5M Lemah ({dex_data['price_change_5m']}%)"
     
-    # MATIKAN SYARAT 1H PULLBACK YANG TERLALU KETAT (Supaya bot tak bisu)
-    # if not (MIN_1H_CHANGE <= dex_data['price_change_1h'] <= MAX_1H_CHANGE): return False
-    
-    # LONGGARKAN 5M (Asalkan 5 minit terakhir dia hijau/naik lebih 0.5%)
-    if dex_data['price_change_5m'] <= 0.5: return False 
-    return True
-
+    return True, "LULUS SYARAT 🎯"
 # =====================================================================
 # ENJIN QUANT RSI & FIBONACCI (HYBRID)
 # =====================================================================
@@ -298,47 +309,87 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
 # =====================================================================
 # 5. ENJIN PENGIMBAS (LOGIK PENCARIAN SIMBOL KEKAL)
 # =====================================================================
-def run_live_scan(categories):
-    for cat in categories:
-        print(f"\n[📡] Menyemak Sektor: {cat.upper()}...")
-        coins = get_coins_in_category(cat)
-        
-        if not coins: 
-            print(f"   [!] Gagal dapat senarai koin. Berehat 15 saat...")
-            time.sleep(15)
-            continue
+def run_live_scan(categories, max_coins=15, engine_label="ENJIN"):
+    try:
+        for cat in categories:
+            print(f"\n[📡 {engine_label}] Menyemak Sektor: {cat.upper()} (Had: Top {max_coins} Token)...")
+            coins = get_coins_in_category(cat, per_page=max_coins)
             
-        for coin in coins:
-            sym = coin['symbol']
-            dex_data = get_dexscreener_data(sym, search_type="symbol")
-            if not dex_data: continue
+            if not coins: 
+                print(f"   [!] Sektor {cat.upper()} tiada respon. Seterusnya...")
+                continue
+                
+            stats = {'scanned': 0, 'passed': 0, 'reasons': {}} # Perekod Ringkasan
             
-            if execute_sniper_protocol(dex_data):
-                print(f"   🔥 [LULUS] Signal ditemui untuk {sym.upper()}!")
+            for coin in coins:
+                sym = coin['symbol']
+                dex_data = get_dexscreener_data(sym, search_type="symbol")
+                if not dex_data: continue
                 
-                # --- SISTEM PENAPIS RANK AUTO-SCAN ---
-                raw_rank = coin.get('market_cap_rank') or coin.get('rank')
-                final_rank = str(raw_rank) if raw_rank and str(raw_rank).isdigit() else "N/A"
+                stats['scanned'] += 1
                 
-                c_info = {
-                    'name': dex_data['name'], 
-                    'symbol': dex_data['symbol'], 
-                    'id': coin.get('id', coin['name'].lower().replace(" ", "-")), 
-                    'contract_address': dex_data['contract_address'], 
-                    'narrative': cat, 
-                    'market_cap_rank': final_rank
-                }
-                send_signal(c_info, dex_data, target_chat_id=VIP_CHANNEL_ID)
-        
-        time.sleep(5) 
+                # Terima dua nilai dari enjin tapisan
+                is_passed, reason = execute_sniper_protocol(dex_data)
+                
+                if is_passed:
+                    stats['passed'] += 1
+                    print(f"   🔥 [LULUS] Signal ditemui untuk {sym.upper()}!")
+                    
+                    raw_rank = coin.get('market_cap_rank') or coin.get('rank')
+                    final_rank = str(raw_rank) if raw_rank and str(raw_rank).isdigit() else "N/A"
+                    
+                    c_info = {
+                        'name': dex_data['name'], 
+                        'symbol': dex_data['symbol'], 
+                        'id': coin.get('id', coin['name'].lower().replace(" ", "-")), 
+                        'contract_address': dex_data['contract_address'], 
+                        'narrative': f"{engine_label} | {cat}", 
+                        'market_cap_rank': final_rank
+                    }
+                    send_signal(c_info, dex_data, verdict=f"{engine_label} PRO 🎯", target_chat_id=VIP_CHANNEL_ID)
+                else:
+                    # Kumpul sebab-sebab koin ditolak
+                    stats['reasons'][reason] = stats['reasons'].get(reason, 0) + 1
+            
+            # --- PAPARAN RINGKASAN LOG DI RENDER ---
+            print(f"   📊 [RINGKASAN SEKTOR {cat.upper()}]")
+            print(f"      - Token Diimbas : {stats['scanned']}")
+            print(f"      - Lulus Signal  : {stats['passed']}")
+            if stats['reasons']:
+                print(f"      - Punca Koin Ditolak:")
+                for r, count in sorted(stats['reasons'].items(), key=lambda item: item[1], reverse=True):
+                    print(f"         > {r} = {count} token")
+            
+            time.sleep(5) # Jeda keselamatan pelayan API
+
+    except Exception as e:
+        error_details = traceback.format_exc()
+        print(f"[!] RALAT KRITIKAL DALAM {engine_label}:\n{error_details}")
+        alert_admin(f"Kerosakan Semasa Imbasan {engine_label}:\n{str(e)}\n\nSila semak Render Logs.") 
 
 def main_job():
-    global IS_SCANNING, CURRENT_ENGINE
+    global IS_SCANNING
     if not IS_SCANNING: return
     
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Kitaran Auto-Scan Bermula... (VVIP API Aktif)")
-    if CURRENT_ENGINE == 1: run_live_scan(CORE_NARRATIVES); CURRENT_ENGINE = 2
-    elif CURRENT_ENGINE == 2: run_live_scan(get_trending_categories()); CURRENT_ENGINE = 1
+    try:
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Kitaran Gergasi Auto-Scan Bermula...")
+        
+        # === 🚀 ENJIN 1: FOKUS NARATIF TETAP ===
+        print("\n>>> Memulakan ENJIN 1 (Naratif Teras)...")
+        run_live_scan(CORE_NARRATIVES, max_coins=15, engine_label="ENJIN 1")
+        
+        # === 🔥 ENJIN 2: FOKUS TOP 3 TRENDING SEKTOR ===
+        print("\n>>> Memulakan ENJIN 2 (Hype Semasa Harian)...")
+        trending_cats = get_trending_categories()
+        if trending_cats:
+            run_live_scan(trending_cats, max_coins=5, engine_label="ENJIN 2")
+        else:
+            print("[!] Enjin 2 Gagal: Masalah sambungan senarai trending.")
+            
+    except Exception as e:
+        error_details = traceback.format_exc()
+        alert_admin(f"CRASH KESELURUHAN (MAIN JOB):\n{str(e)}")
+        print(f"[!] SYSTEM CRASH:\n{error_details}")
 
 # =====================================================================
 # 6. TELEGRAM COMMANDS & BULLETPROOF SCHEDULER 
