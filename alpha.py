@@ -406,11 +406,16 @@ def cmd_resume(message): global IS_SCANNING; IS_SCANNING = True; bot.reply_to(me
 @bot.message_handler(commands=['ca'])
 def cmd_ca(message):
     try:
-        address = message.text.split()[1]
-        bot.reply_to(message, f"⚙️ DD Analisis CA:\n`{address}`", parse_mode="Markdown")
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Format salah. Taip: `/ca <contract_address>`", parse_mode="Markdown")
+            return
+            
+        address = parts[1]
+        bot.reply_to(message, f"⚙️ DD Analisis CA memproses:\n`{address}`", parse_mode="Markdown")
+        
         dex_data = get_dexscreener_data(address, search_type="ca")
         if dex_data:
-            # --- ARAHKAN BOT TANYA RANK DI COINGECKO BERDASARKAN SIMBOL ---
             headers = {"x-cg-demo-api-key": CG_API_KEY}
             rank_find = "N/A"
             cg_id = dex_data['name'].lower().replace(" ", "-")
@@ -432,9 +437,14 @@ def cmd_ca(message):
             }
             # Tembak signal terus ke VIP Channel
             send_signal(c_info, dex_data, verdict="MANUAL DD 🔍", target_chat_id=VIP_CHANNEL_ID)
-            bot.reply_to(message, "✅ Signal blast successfully!")
-        else: bot.reply_to(message, "❌ Data Dexscreener gagal diexecute.")
-    except Exception as e: bot.reply_to(message, f"❌ Format salah. Taip: `/ca <contract_address>`", parse_mode="Markdown")
+            bot.reply_to(message, "✅ Signal blast berjaya!")
+        else: 
+            bot.reply_to(message, "❌ Data Dexscreener gagal ditarik (Koin mungkin tak wujud di DEX).")
+            
+    except Exception as e: 
+        error_details = traceback.format_exc()
+        bot.reply_to(message, f"🚨 **RALAT SISTEM:**\n`{str(e)}`\n\nSila rujuk Render Logs untuk detail.", parse_mode="Markdown")
+        print(f"\n[!] ERROR DALAM COMMAND /CA:\n{error_details}")
 
 class RenderHandler(BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"AlphaV4 PRO ACTIVE & BULLETPROOF")
