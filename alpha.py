@@ -749,6 +749,18 @@ def run_scan(categories, max_coins=20, label="ENJIN"):
         time.sleep(5)
     save_json(WARM_POOL_FILE, WARM_POOL)
 
+def main_scan():
+    if not IS_SCANNING:
+        return
+    try:
+        process_warm_pool()
+        run_scan(CORE_NARRATIVES, 20, "ENJIN 1")
+        trending = get_trending_categories()
+        if trending:
+            run_scan(trending, 10, "ENJIN 2")
+    except Exception as e:
+        alert_admin(f"CRASH SCAN:\n{traceback.format_exc()[:400]}")
+
 # ================================================================
 # 9. JOURNAL — auto setiap Ahad 21:00 + paksa manual
 # ================================================================
@@ -1091,7 +1103,7 @@ def cmd_journal(msg):
 def cmd_scan(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
     bot.reply_to(msg, "⚙️ Kitaran scan dipaksa...")
-    threading.Thread(target=run_scan).start()
+    threading.Thread(target=main_scan).start()
 
 @bot.message_handler(commands=['status'])
 def cmd_status(msg):
