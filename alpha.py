@@ -12,14 +12,12 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # =====================================================================
 # 1. KONFIGURASI & API KEYS (SECURED)
 # =====================================================================
-# Kunci-kunci ini kini dipanggil dari peti besi pelayan (Environment Variables)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 CG_API_KEY = os.environ.get("CG_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-import traceback # Pastikan tambah 'import traceback' di bahagian paling atas (tempat import module)
 
 def alert_admin(error_text):
     """Hantar mesej ralat terus ke Telegram Admin"""
@@ -29,27 +27,28 @@ def alert_admin(error_text):
     except Exception as e:
         print(f"[!] Gagal hantar amaran ke Telegram: {e}")
 
+# =====================================================================
+# 2. PARAMETER GLOBAL & WARM POOL (WATCHLIST)
+# =====================================================================
 IS_SCANNING = True
-IS_SCANNING = True
-CURRENT_ENGINE = 2  
+WARM_POOL = {} # <-- Ini laci yang hilang tadi. Sekarang dah ada!
 
-# PARAMETER PENAPISAN (SWEET SPOT YANG DILONGGARKAN)
+# PARAMETER PENAPISAN (SWEET SPOT)
 MC_MIN, MC_MAX = 1000000, 500000000
-MIN_LIQUIDITY = 100000
+MIN_LIQUIDITY = 150000
 MIN_VOL_MC_RATIO = 0.05
 MIN_24H_CHANGE = 5.0
-MAX_1H_CHANGE = -1.0   
-MIN_1H_CHANGE = -8.0   
 
-# Kategori CoinGecko Yang Telah Dikemaskini (Gred VVIP 2024-2026)
+# Naratif CoinGecko (100% Pure Spot, Utility-Based, Syariah Compliant)
 CORE_NARRATIVES = [
-    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'meme-token',
-    'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 'sui-ecosystem', 'zero-knowledge-proofs',
-    'bitcoin-ecosystem', 'gaming', 'restaking', 'layer-1', 'layer-2', 'decentralized-storage'
+    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'layer-1', 
+    'layer-2', 'decentralized-storage', 'zero-knowledge-proofs',
+    'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 
+    'sui-ecosystem', 'bitcoin-ecosystem'
 ]
 
 # =====================================================================
-# 2. LIVE API FETCHERS (ENJIN KEKAL - VVIP)
+# 3. LIVE API FETCHERS (OPTIMIZED FOR DUAL-ENGINE)
 # =====================================================================
 def get_trending_categories():
     try:
@@ -88,13 +87,6 @@ def get_dexscreener_data(query, search_type="symbol"):
             age_days = (int(time.time() * 1000) - created_at) / (1000 * 60 * 60 * 24) if created_at else 0
             age_display = f"{int(age_days)} Hari" if age_days >= 1 else f"{int(age_days * 24)} Jam"
             
-            info = pair.get('info', {})
-            websites = info.get('websites', [])
-            website_url = websites[0].get('url') if websites else None
-            socials = info.get('socials', [])
-            twitter_url = next((s.get('url') for s in socials if s.get('type') == 'twitter'), None)
-            telegram_url = next((s.get('url') for s in socials if s.get('type') == 'telegram'), None)
-
             return {
                 'name': pair.get('baseToken', {}).get('name', 'Unknown'),
                 'symbol': pair.get('baseToken', {}).get('symbol', 'TOKEN'),
@@ -103,22 +95,18 @@ def get_dexscreener_data(query, search_type="symbol"):
                 'market_cap': float(pair.get('fdv', 0)), 
                 'volume_24h': float(pair.get('volume', {}).get('h24', 0)),
                 'price_change_24h': float(pair.get('priceChange', {}).get('h24', 0)),
-                'price_change_1h': float(pair.get('priceChange', {}).get('h1', 0)),
                 'price_change_5m': float(pair.get('priceChange', {}).get('m5', 0)), 
                 'liquidity': float(pair.get('liquidity', {}).get('usd', 0)),
                 'network': chain_id.capitalize(),
                 'chain_raw': chain_id, 
                 'age_display': age_display,
-                'website': website_url,
-                'twitter_official': twitter_url,
-                'telegram': telegram_url,
                 'pair_address': pair.get('pairAddress', '')
             }
         return None
     except: return None
 
 # =====================================================================
-# 3. PENAPISAN & LIVE SECURITY API 
+# 4. PENAPISAN, VETO & LIVE SECURITY API 
 # =====================================================================
 def verify_security_live(network, contract_address):
     try:
@@ -136,42 +124,34 @@ def execute_sniper_protocol(dex_data):
     if dex_data['liquidity'] < MIN_LIQUIDITY: 
         return False, f"VETO GAGAL: Kecairan Rendah (${dex_data['liquidity']/1e3:.1f}K)", False
     
-    # Kalau sampai sini, koin dah selamat dari scam. Automatik dapat 2 Markah!
     score = 2
     failed_reasons = []
 
     # 2. SYARAT TEKNIKAL (Pengumpulan 3 Markah)
     if dex_data['market_cap'] > 0 and (dex_data['volume_24h'] / dex_data['market_cap']) >= MIN_VOL_MC_RATIO:
         score += 1
-    else:
-        failed_reasons.append("Vol < 5%")
+    else: failed_reasons.append("Vol < 5%")
         
     if dex_data['price_change_24h'] >= MIN_24H_CHANGE:
         score += 1
-    else:
-        failed_reasons.append("Trend 24H Merah")
+    else: failed_reasons.append("Trend 24H Merah")
         
     if dex_data['price_change_5m'] > 0.5:
         score += 1
-    else:
-        failed_reasons.append("Tiada 5M Reversal")
+    else: failed_reasons.append("Tiada 5M Reversal")
 
     reason_msg = " | ".join(failed_reasons) if failed_reasons else "LULUS BERSIH 🎯"
 
-    # 3. KEPUTUSAN (Sistem 3/5 dan 4/5 Kau)
+    # 3. KEPUTUSAN MARKAH (HIBRID)
     if score >= 4:
-        # LULUS MINIMUM (4/5 atau 5/5): Tembak Signal Telegram!
         return True, f"Skor {score}/5: {reason_msg}", False 
-        
     elif score == 3:
-        # KELAS MENENGAH (3/5): Masuk Watchlist / Warm Pool
         return False, f"Skor {score}/5 (Watchlist): {reason_msg}", True 
-        
     else:
-        # GAGAL KESELURUHAN (2/5): Buang terus
         return False, f"Skor {score}/5 (Ditolak): {reason_msg}", False
+
 # =====================================================================
-# ENJIN QUANT RSI & FIBONACCI (HYBRID)
+# 5. ENJIN PENGIRAAN: ATR, RSI & FIBO (WALL STREET FORMULA)
 # =====================================================================
 def calculate_rsi_fibo_live(network, pair_address, current_live_price):
     try:
@@ -235,13 +215,12 @@ def calculate_rsi_fibo_live(network, pair_address, current_live_price):
         return "N/A (API Error)", "N/A (API Error)", 0
 
 # =====================================================================
-# 4. ALGO TRADE SETUP & BROADCAST UI 
+# 6. ALGO TRADE SETUP & BROADCAST UI (DYNAMIC R:R)
 # =====================================================================
 def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_chat_id=VIP_CHANNEL_ID):
     sec_status = verify_security_live(dex_data['network'], coin_info['contract_address'])
     is_sol = dex_data['network'].lower() in ['solana', 'sol']
     
-    # Terima 3 nilai sekarang: RSI, Fibo, dan ATR
     live_rsi, live_fibo, atr = calculate_rsi_fibo_live(dex_data['network'], dex_data.get('pair_address', ''), dex_data['price_usd'])
     
     buy_bot_name = "🔫 BonkBot" if is_sol else "🦄 Maestro"
@@ -249,33 +228,18 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
     chain_url = dex_data.get('chain_raw', 'search?q=').lower()
 
     entry = dex_data['price_usd']
-    
-    # ==========================================================
-    # 🧮 INSTITUTIONAL DYNAMIC RISK MANAGEMENT (ATR + R:R)
-    # ==========================================================
-    # Intraday Buffer: Kita ambil 15% dari Daily ATR untuk SL Sniper (Elak kena sweep jarum)
-    intraday_atr = atr * 0.15 if atr > 0 else (entry * 0.08) # Fallback 8% kalau koin baru (tiada data ATR)
-    
+    intraday_atr = atr * 0.15 if atr > 0 else (entry * 0.08) 
     sl = entry - intraday_atr
     risk_amount = entry - sl
     sl_pct = ((entry - sl) / entry) * 100
     
-    # TP Berdasarkan Nisbah R:R (Bukan tekaan statik)
-    tp1 = entry + (risk_amount * 1.5) # R:R 1:1.5 (Target Realistik)
-    tp2 = entry + (risk_amount * 3.0) # R:R 1:3.0 (Target Optimum)
-    tp3 = entry + (risk_amount * 5.0) # R:R 1:5.0 (Moonbag/Runner)
-
-    tp1_pct = ((tp1 - entry) / entry) * 100
-    tp2_pct = ((tp2 - entry) / entry) * 100
-    tp3_pct = ((tp3 - entry) / entry) * 100
-    # ==========================================================
+    tp1, tp2, tp3 = entry + (risk_amount * 1.5), entry + (risk_amount * 3.0), entry + (risk_amount * 5.0)
+    tp1_pct, tp2_pct, tp3_pct = ((tp1 - entry) / entry) * 100, ((tp2 - entry) / entry) * 100, ((tp3 - entry) / entry) * 100
     
     liq = max(dex_data['liquidity'], 1)
     turnover_ratio = dex_data['volume_24h'] / liq
-
     trend_sign = "+" if dex_data['price_change_24h'] >= 0 else ""
     m5_sign = "+" if dex_data['price_change_5m'] >= 0 else ""
-
     cg_slug = coin_info.get('id', coin_info['name'].lower().replace(" ", "-"))
 
     msg = f"""⚡ <b>ALPHA EXECUTION : {coin_info['narrative'].upper()}</b>
@@ -288,7 +252,6 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
 • <b>Trend 24H :</b> <code>{trend_sign}{dex_data['price_change_24h']}%</code> 🟢 | <b>Vol 24H :</b> <code>${dex_data['volume_24h'] / 1e6:.1f}M</code> 🟢
 
 📊 <b>MOMENTUM VELOCITY & QUANT STRUCTURE</b>
-• <b>Macro (24H) :</b> <code>{trend_sign}{dex_data['price_change_24h']}%</code> 🟢
 • <b>Sniper (5M) :</b> <code>{m5_sign}{dex_data['price_change_5m']}%</code> 🟢
 • <b>RSI (14D) :</b> <code>{live_rsi}</code>
 • <b>Fibo Level :</b> <code>{live_fibo}</code>
@@ -308,34 +271,21 @@ def send_signal(coin_info, dex_data, verdict="THE SNIPER ENTRY 🎯", target_cha
 
 ⚡ <b>VERDICT : {verdict}</b>
 """
-# (Biarkan bahagian butang InlineKeyboardMarkup kekal seperti biasa)   
     markup = InlineKeyboardMarkup()
     sym = coin_info['symbol'].upper()
-    
     markup.row(InlineKeyboardButton(buy_bot_name, url=buy_bot_link))
-    
     markup.row(
         InlineKeyboardButton("📊 Dexscreener", url=f"https://dexscreener.com/{chain_url}/{coin_info['contract_address']}"),
         InlineKeyboardButton("🦎 CoinGecko", url=f"https://www.coingecko.com/en/coins/{cg_slug}")
     )
-    
     markup.row(
         InlineKeyboardButton("📰 Berita X", url=f"https://twitter.com/search?q=%24{sym}"),
         InlineKeyboardButton("🟨 Binance", url=f"https://www.binance.com/en/trade/{sym}_USDT")
     )
-
-    social_buttons = []
-    if dex_data.get('twitter_official'): social_buttons.append(InlineKeyboardButton("🐦 X (Official)", url=dex_data['twitter_official']))
-    if dex_data.get('telegram'): social_buttons.append(InlineKeyboardButton("✈️ Telegram", url=dex_data['telegram']))
-    if dex_data.get('website'): social_buttons.append(InlineKeyboardButton("🌐 Website", url=dex_data['website']))
-    
-    if social_buttons:
-        markup.row(*social_buttons)
-
     bot.send_message(target_chat_id, msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 # =====================================================================
-# 5. ENJIN PENGIMBAS (LOGIK PENCARIAN SIMBOL KEKAL)
+# 7. SCANNER ENGINES & WARM POOL PROCESSOR
 # =====================================================================
 def process_warm_pool():
     global WARM_POOL
@@ -345,7 +295,6 @@ def process_warm_pool():
     to_remove = []
     
     for sym, timestamp in WARM_POOL.items():
-        # Buang dari watchlist jika dah lebih 1 jam (Expired) untuk jimat RAM
         if time.time() - timestamp > 3600:
             to_remove.append(sym)
             continue
@@ -363,12 +312,10 @@ def process_warm_pool():
                 'narrative': "🔥 WATCHLIST BREAKOUT", 'market_cap_rank': "N/A"
             }
             send_signal(c_info, dex_data, verdict="WATCHLIST SNIPER 🎯", target_chat_id=VIP_CHANNEL_ID)
-            to_remove.append(sym) # Buang lepas berjaya tembak signal
+            to_remove.append(sym)
         elif not is_warm:
-            # Kalau syarat macro tiba-tiba rosak (contoh: volume jatuh), buang dari watchlist
             to_remove.append(sym)
             
-    # Kemaskini memori (Buang yang dah expired/ditembak)
     for sym in to_remove:
         WARM_POOL.pop(sym, None)
 
@@ -377,16 +324,14 @@ def run_live_scan(categories, max_coins=15, engine_label="ENJIN"):
     try:
         for cat in categories:
             print(f"\n[📡 {engine_label}] Menyemak Sektor: {cat.upper()}...")
-            # Kita paksa CoinGecko tarik per_page=50, supaya kita ada peluang jumpa koin kecil di bawah radar
-            coins = get_coins_in_category(cat, per_page=50)
+            coins = get_coins_in_category(cat, per_page=50) # Tarik 50, tapis ke max_coins
             
             if not coins: continue
             
             stats = {'scanned': 0, 'passed': 0, 'warm': 0, 'reasons': {}} 
             
-            for coin in coins[:max_coins]: # Hadkan gelung mengikut max_coins
+            for coin in coins[:max_coins]: 
                 sym = coin['symbol']
-                # Jangan bazir masa kalau koin dah ada dalam watchlist
                 if sym in WARM_POOL: continue 
                 
                 dex_data = get_dexscreener_data(sym, search_type="symbol")
@@ -405,21 +350,24 @@ def run_live_scan(categories, max_coins=15, engine_label="ENJIN"):
                     }
                     send_signal(c_info, dex_data, verdict=f"{engine_label} PRO 🎯", target_chat_id=VIP_CHANNEL_ID)
                 elif is_warm:
-                    # Masukkan ke dalam memori WARM POOL
                     WARM_POOL[sym] = time.time()
                     stats['warm'] += 1
                 else:
                     stats['reasons'][reason] = stats['reasons'].get(reason, 0) + 1
             
-            # --- PAPARAN LOG ---
             print(f"   📊 [RINGKASAN SEKTOR {cat.upper()}]")
             print(f"      - Token Diimbas : {stats['scanned']}")
             print(f"      - Lulus Signal  : {stats['passed']}")
-            print(f"      - Masuk Watchlist : {stats['warm']}")
+            print(f"      - Ke Watchlist  : {stats['warm']}")
+            if stats['reasons']:
+                print(f"      - Punca Koin Ditolak:")
+                for r, count in sorted(stats['reasons'].items(), key=lambda item: item[1], reverse=True):
+                    print(f"         > {r} = {count} token")
             time.sleep(5) 
 
     except Exception as e:
         error_details = traceback.format_exc()
+        print(f"[!] RALAT: {error_details}")
         alert_admin(f"Kerosakan Semasa Imbasan {engine_label}:\n{str(e)}")
 
 def main_job():
@@ -427,21 +375,22 @@ def main_job():
     if not IS_SCANNING: return
     try:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Kitaran Gergasi Auto-Scan Bermula...")
-        
-        # 1. PERIKSA WATCHLIST DULU
         process_warm_pool()
         
-        # 2. ENJIN 1: NARATIF TERAS
+        print("\n>>> Memulakan ENJIN 1 (Naratif Teras)...")
         run_live_scan(CORE_NARRATIVES, max_coins=20, engine_label="ENJIN 1")
         
-        # 3. ENJIN 2: HYPE HARIAN
+        print("\n>>> Memulakan ENJIN 2 (Hype Semasa Harian)...")
         trending_cats = get_trending_categories()
         if trending_cats: run_live_scan(trending_cats, max_coins=10, engine_label="ENJIN 2")
             
     except Exception as e:
+        error_details = traceback.format_exc()
+        print(f"[!] SYSTEM CRASH:\n{error_details}")
         alert_admin(f"CRASH KESELURUHAN (MAIN JOB):\n{str(e)}")
+
 # =====================================================================
-# 6. TELEGRAM COMMANDS & BULLETPROOF SCHEDULER 
+# 8. TELEGRAM COMMANDS & SERVER ENVIRONMENT
 # =====================================================================
 @bot.message_handler(commands=['scan'])
 def cmd_scan(message): bot.reply_to(message, "⏳ Memaksa kitaran imbasan manual..."); threading.Thread(target=main_job).start()
@@ -477,14 +426,10 @@ def cmd_ca(message):
             except: pass
 
             c_info = {
-                'name': dex_data['name'], 
-                'symbol': dex_data['symbol'], 
-                'id': cg_id, 
-                'contract_address': dex_data['contract_address'], 
-                'narrative': 'Manual-DD', 
+                'name': dex_data['name'], 'symbol': dex_data['symbol'], 'id': cg_id, 
+                'contract_address': dex_data['contract_address'], 'narrative': 'Manual-DD', 
                 'market_cap_rank': str(rank_find)
             }
-            # Tembak signal terus ke VIP Channel
             send_signal(c_info, dex_data, verdict="MANUAL DD 🔍", target_chat_id=VIP_CHANNEL_ID)
             bot.reply_to(message, "✅ Signal blast berjaya!")
         else: 
@@ -509,7 +454,7 @@ def run_scheduler():
 if __name__ == "__main__":
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 8080))), RenderHandler).serve_forever(), daemon=True).start()
     threading.Thread(target=run_scheduler, daemon=True).start()
-    try: bot.send_message(ADMIN_ID, "🚨 HELLO, ALPHA V4 PRO ACTIVATED")
+    try: bot.send_message(ADMIN_ID, "🚨 ALPHA V4 PRO (CLEAN SLATE V7.0) ACTIVATED")
     except: pass
     threading.Thread(target=main_job).start()
     bot.infinity_polling(timeout=20, long_polling_timeout=20)
