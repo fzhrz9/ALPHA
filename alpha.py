@@ -43,8 +43,8 @@ MIN_1H_CHANGE = -8.0
 # Kategori CoinGecko Yang Telah Dikemaskini (Gred VVIP 2024-2026)
 CORE_NARRATIVES = [
     'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'meme-token',
-    'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 'sui-ecosystem',
-    'bitcoin-ecosystem', 'gaming', 'restaking'
+    'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 'sui-ecosystem', 'zero-knowledge-proofs',
+    'bitcoin-ecosystem', 'gaming', 'restaking', 'layer-1', 'layer-2', 'decentralized-storage'
 ]
 
 # =====================================================================
@@ -58,10 +58,10 @@ def get_trending_categories():
         return [cat['id'] for cat in sorted_cats[:3]]
     except: return []
 
-def get_coins_in_category(category_id):
+def get_coins_in_category(category_id, per_page=15):
     try:
         headers = {"x-cg-demo-api-key": CG_API_KEY}
-        url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category={category_id}&order=market_cap_desc&per_page=15&page=1"
+        url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category={category_id}&order=market_cap_desc&per_page={per_page}&page=1"
         res = requests.get(url, headers=headers, timeout=10).json()
         return res if isinstance(res, list) else []
     except: return []
