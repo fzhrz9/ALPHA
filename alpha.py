@@ -54,9 +54,9 @@ def cg_cache_status():
     return f"Cache {age_m}m lepas | Luput {exp_m}m lagi | {n_cats} kategori"
 
 DEFAULT_CONFIG = {
-    "mc_min":            1_000_000,    # $1M
-    "mc_max":          500_000_000,    # $500M
-    "liq_min":           150_000,      # $150K
+    "mc_min":            100_000,      # $100k
+    "mc_max":          900_000_000,    # $900M
+    "liq_min":           150_000,      # $50K
     "vol_mc_ratio_min":      0.05,     # 5%
     "change_24h_min":        5.0,      # +5%
     "change_5m_min":         0.5,      # +0.5%
@@ -93,8 +93,8 @@ IS_SCANNING   = True
 ACTIVE_TRADES = {ca: t for ca, t in TRADE_LOG.items() if not t.get('closed')}
 
 CORE_NARRATIVES = [
-    'artificial-intelligence', 'depin', 'real-world-assets-rwa',
-    'layer-1', 'meme', 'layer-2', 'zero-knowledge-proofs',
+    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'meme',
+    'layer-1', 'meme', 'layer-2', 'zero-knowledge-proofs', 'DeFi', 'AI',
     'solana-ecosystem', 'base-ecosystem', 'bitcoin-ecosystem',
 ]
 
