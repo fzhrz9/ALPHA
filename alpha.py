@@ -681,7 +681,7 @@ def clean_pools():
         save_json(SENT_POOL_FILE, SENT_POOL)
 
 def process_warm_pool():
-    global WARM_POOL, SENT_POOL
+    global WARM_POOL, SENT_POOL, ACTIVE_TRADES
     to_remove = []
     for sym, ts in list(WARM_POOL.items()):
         if time.time() - ts > 3600:
@@ -690,6 +690,13 @@ def process_warm_pool():
         dex = get_dex(sym)
         if not dex:
             continue
+            
+        # --- 🛑 FIX ANTI-SPAM: JIKA TRADE MASIH AKTIF, BLOCK SIGNAL! ---
+        if dex['contract'] in ACTIVE_TRADES:
+            to_remove.append(sym)
+            continue
+        # ---------------------------------------------------------------
+            
         passed, reason, is_warm = run_filter(dex)
         if passed:
             if sym in SENT_POOL and time.time() - SENT_POOL[sym] < 3600:
@@ -709,7 +716,7 @@ def process_warm_pool():
     save_json(WARM_POOL_FILE, WARM_POOL)
 
 def run_scan(categories, max_coins=20, label="ENJIN"):
-    global WARM_POOL, SENT_POOL
+    global WARM_POOL, SENT_POOL, ACTIVE_TRADES
     clean_pools()
     for cat in categories:
         print(f"[{label}] Sektor: {cat}")
@@ -723,6 +730,12 @@ def run_scan(categories, max_coins=20, label="ENJIN"):
             dex = get_dex(sym)
             if not dex:
                 continue
+                
+            # --- 🛑 FIX ANTI-SPAM: JIKA TRADE MASIH AKTIF, BLOCK SIGNAL! ---
+            if dex['contract'] in ACTIVE_TRADES:
+                continue
+            # ---------------------------------------------------------------
+                
             passed, reason, is_warm = run_filter(dex)
             if passed:
                 send_signal(
@@ -735,18 +748,6 @@ def run_scan(categories, max_coins=20, label="ENJIN"):
                 WARM_POOL[sym] = time.time()
         time.sleep(5)
     save_json(WARM_POOL_FILE, WARM_POOL)
-
-def main_scan():
-    if not IS_SCANNING:
-        return
-    try:
-        process_warm_pool()
-        run_scan(CORE_NARRATIVES, 20, "ENJIN 1")
-        trending = get_trending_categories()
-        if trending:
-            run_scan(trending, 10, "ENJIN 2")
-    except Exception as e:
-        alert_admin(f"CRASH SCAN:\n{traceback.format_exc()[:400]}")
 
 # ================================================================
 # 9. JOURNAL — auto setiap Ahad 21:00 + paksa manual
