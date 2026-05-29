@@ -1091,7 +1091,7 @@ def cmd_journal(msg):
 def cmd_scan(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
     bot.reply_to(msg, "⚙️ Kitaran scan dipaksa...")
-    threading.Thread(target=main_scan).start()
+    threading.Thread(target=run_scan).start()
 
 @bot.message_handler(commands=['status'])
 def cmd_status(msg):
