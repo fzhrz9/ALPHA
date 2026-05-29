@@ -45,14 +45,14 @@ def save_sent_pool():
     with open(SENT_POOL_FILE, "w") as f:
         json.dump(SENT_POOL, f)
 
-MC_MIN, MC_MAX = 1000000, 500000000
+MC_MIN, MC_MAX = 1000000, 1000000000
 MIN_LIQUIDITY = 150000
 MIN_VOL_MC_RATIO = 0.05
 MIN_24H_CHANGE = 5.0
 
 CORE_NARRATIVES = [
-    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'layer-1', 
-    'layer-2', 'decentralized-storage', 'zero-knowledge-proofs',
+    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'layer-1', 'meme', 'pump.fun',
+    'layer-2', 'decentralized-storage', 'zero-knowledge-proofs', 'oracles', 'DeFi',
     'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 'sui-ecosystem', 'bitcoin-ecosystem'
 ]
 
