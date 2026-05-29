@@ -56,8 +56,8 @@ MIN_VOL_MC_RATIO = 0.05
 MIN_24H_CHANGE = 5.0
 
 CORE_NARRATIVES = [
-    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'layer-1', 
-    'layer-2', 'decentralized-storage', 'zero-knowledge-proofs',
+    'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'layer-1', 'meme', 
+    'layer-2', 'decentralized-storage', 'zero-knowledge-proofs', 'pump.fun', 'DeFi',
     'solana-ecosystem', 'base-ecosystem', 'ton-ecosystem', 'sui-ecosystem', 'bitcoin-ecosystem'
 ]
 
