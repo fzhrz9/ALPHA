@@ -94,7 +94,7 @@ ACTIVE_TRADES = {ca: t for ca, t in TRADE_LOG.items() if not t.get('closed')}
 
 CORE_NARRATIVES = [
     'artificial-intelligence', 'depin', 'real-world-assets-rwa', 'meme',
-    'layer-1', 'meme', 'layer-2', 'zero-knowledge-proofs', 'DeFi', 'AI',
+    'layer-1', 'meme', 'layer-2', 'zero-knowledge-proofs', 'DeFi', 'ai',
     'solana-ecosystem', 'base-ecosystem', 'bitcoin-ecosystem',
 ]
 
