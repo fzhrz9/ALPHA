@@ -333,7 +333,7 @@ def send_signal(sym, smc_data, vol_24h):
         f"📊 <b>Vol24H:</b> <code>${vol_24h/1e6:.2f}M</code>\n\n"
         f"🛑 <b>SL:</b> <code>${fmt(sl)}</code> <i>(-{sl_pct:.1f}%)</i>\n"
         f"📈 <b>TP1:</b> <code>${fmt(tp1)}</code> <i>(+{tp1_pct:.1f}%)</i>\n"
-        f" <b>TP2:</b> <code>${fmt(tp2)}</code> <i>(+{tp2_pct:.1f}%)</i>\n"
+        f"📈 <b>TP2:</b> <code>${fmt(tp2)}</code> <i>(+{tp2_pct:.1f}%)</i>\n"
         f"📈 <b>TP3:</b> <code>${fmt(tp3)}</code> <i>(+{tp3_pct:.1f}%)</i>\n\n"
         f"🧠 <b>Setup:</b> <code>{smc_data['setup']}</code>\n"
         f"🎯 <b>RR:</b> <code>1:{rr2:.1f}</code> | <b>Score:</b> <code>{smc_data['score']}/{cfg['score_pass']}</code>"
