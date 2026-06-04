@@ -2,6 +2,7 @@
 ALPHA — Gate.io Spot SMC & Price Action Sniper (H1)
 Edge: Buy the dip at Discount Zone (Fib 0.5-0.786), target Moonshot TP.
 7 Setup Engine + VPA Filter + Verbose Render Logging.
+Minimalist signal format. Fibonacci hidden from display.
 """
 import os, time, json, requests, threading, traceback, schedule
 from telebot import TeleBot
@@ -146,6 +147,7 @@ def get_gateio_klines(sym, interval="1h", limit=50):
     try:
         r = requests.get(url, timeout=8).json()
         candles = []
+        # Gate.io format: [timestamp, volume, close, highest, lowest, open, quote_volume]
         for k in reversed(r):
             candles.append({
                 't': int(k[0]), 'o': float(k[5]), 'h': float(k[3]),
@@ -159,11 +161,15 @@ def get_gateio_klines(sym, interval="1h", limit=50):
 # 4. ENJIN SMC + PRICE ACTION (H1 TIMEFRAME) — 7 SETUP ENGINE
 # =================================================================
 def analyze_smc_pa(candles, sym="?", verbose=True):
-    """Mengesan 7 Setup SMC/PA di H1. Syarat Wajib: Fib Discount Zone."""
+    """
+    Mengesan 7 Setup SMC/PA di H1.
+    Syarat Wajib: Harga mesti di Discount Zone (Fib 0.5 - 0.786).
+    Returns: dict dengan setup, entry, sl, tp1, tp2, tp3, score, fib_zone ATAU None
+    """
     log = lambda msg: print(f"[{sym}] {msg}") if verbose else None
 
     if len(candles) < 30:
-        log("❌ REJECT: Data candle < 30")
+        log("❌ REJECT: Data candle < 30 (perlukan sejarah struktur)")
         return None
 
     highs = [c['h'] for c in candles[-30:]]
@@ -175,9 +181,10 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
     swing_low = min(lows)
     rng = swing_high - swing_low
     if rng <= 0:
-        log("❌ REJECT: Range terlalu sempit")
+        log("❌ REJECT: Range terlalu sempit (sideways mati)")
         return None
 
+    # 1. Kira Fibonacci Discount Zone
     fib_500 = swing_high - (rng * 0.500)
     fib_786 = swing_high - (rng * 0.786)
     fib_zone = f"{fmt(fib_500)} - {fmt(fib_786)}"
@@ -186,34 +193,38 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
     prev = candles[-2]
     price = curr['c']
 
+    # 2. ANTI-FOMO HARD FILTER: WAJIB di Discount Zone
     in_discount = fib_786 <= price <= fib_500
     if not in_discount:
         if price > fib_500:
-            log(f"❌ REJECT: Price ${fmt(price)} di PREMIUM ZONE (FOMO)")
+            log(f"❌ REJECT: Price ${fmt(price)} di PREMIUM ZONE (atas Fib 0.5) — FOMO RISK")
         else:
-            log(f"❌ REJECT: Price ${fmt(price)} di EXTREME (falling knife)")
+            log(f" REJECT: Price ${fmt(price)} di EXTREME (bawah Fib 0.786) — falling knife")
         return None
-    log(f"✅ FIBO PASS: Price ${fmt(price)} dalam DISCOUNT ({fib_zone})")
+    log(f"✅ FIBO PASS: Price ${fmt(price)} dalam DISCOUNT ZONE ({fib_zone})")
 
+    # 3. Trend Filter (EMA 20) — Elak catch falling knife
     ema20 = sum(closes[-20:]) / 20
     if price < ema20 * 0.90:
-        log(f"❌ REJECT: Terlalu jauh bawah EMA20 ({fmt(ema20)})")
+        log(f"❌ REJECT: Price terlalu jauh bawah EMA20 ({fmt(ema20)}) — downtrend kuat")
         return None
 
+    # 4. VPA (Volume Price Analysis)
     avg_vol = sum(volumes[-20:]) / 20 if sum(volumes[-20:]) > 0 else 1
     curr_vol = curr['v']
-    vpa_dry = curr_vol < (avg_vol * 0.8)
+    vpa_dry = curr_vol < (avg_vol * 0.8)  # Volume mengecil = pullback sihat
 
+    # 5. Kesan Setup (Scoring Matrix)
     setup_name = None
     score = 0
 
-    # SETUP 7: LIQUIDITY SWEEP
+    # ─── SETUP 7: LIQUIDITY SWEEP (God Tier) ────────────────
     if curr['l'] < swing_low and curr['c'] > swing_low:
-        setup_name = "💧 LIQUIDITY SWEEP (God Tier)"
+        setup_name = "💧 LIQUIDITY SWEEP (Turtle Soup)"
         score += 3
-        log(f"✅ SETUP 7: Sweep Swing Low ${fmt(swing_low)}")
+        log(f"✅ SETUP 7 DETECTED: Harga cucuk Swing Low ${fmt(swing_low)}, close semula atas (Whale trap retail)")
 
-    # SETUP 5: REVERSAL CANDLE
+    # ─── SETUP 5: CANDLESTICK REVERSAL (Pinbar / Engulfing) ──
     body = abs(curr['c'] - curr['o'])
     lower_wick = min(curr['o'], curr['c']) - curr['l']
     is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
@@ -223,26 +234,26 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
     if is_pinbar:
         if not setup_name: setup_name = "🕯️ PINBAR REVERSAL"
         score += 2
-        log("✅ SETUP 5: Pinbar detected")
+        log("✅ SETUP 5 DETECTED: Pinbar dengan ekor panjang (buyer kuat)")
     elif is_engulfing:
         if not setup_name: setup_name = "🐂 BULLISH ENGULFING"
         score += 2
-        log("✅ SETUP 5: Bullish Engulfing detected")
+        log("✅ SETUP 5 DETECTED: Bullish Engulfing (buyer overpower seller)")
 
-    # SETUP 4: VPA
+    # ─── SETUP 4: VPA CONFIRMATION ──────────────────────────
     if vpa_dry:
         score += 1
-        log(f"✅ VPA PASS: Vol {curr_vol:,.0f} < 80% avg")
+        log(f"✅ VPA PASS: Volume {curr_vol:,.0f} < 80% avg ({avg_vol:,.0f}) — tiada whale dump")
     else:
-        log(f"⚠️  VPA WEAK: Vol tinggi ({curr_vol:,.0f})")
+        log(f"⚠️  VPA WEAK: Volume tinggi ({curr_vol:,.0f}) — possible distribution")
 
-    # SETUP 2: TREND PULLBACK
+    # ─── SETUP 2: TREND PULLBACK (Dekat EMA) ───────────────
     if abs(price - ema20) / ema20 < 0.015:
         if not setup_name: setup_name = "📈 TREND PULLBACK (HH/HL)"
         score += 1
-        log("✅ SETUP 2: Pullback ke EMA20")
+        log("✅ SETUP 2 DETECTED: Pullback ke EMA20 (dynamic support)")
 
-    # SETUP 3: ORDER BLOCK
+    # ── SETUP 3: ORDER BLOCK (SMC) ─────────────────────────
     for i in range(-15, -3):
         try:
             c = candles[i]
@@ -252,28 +263,30 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
                 if bos_size > (rng * 0.08) and c['l'] <= price <= c['h']:
                     if not setup_name: setup_name = "🧱 ORDER BLOCK (SMC)"
                     score += 1
-                    log(f"✅ SETUP 3: Price dalam OB")
+                    log(f"✅ SETUP 3 DETECTED: Price dalam Order Block (${fmt(c['l'])}-${fmt(c['h'])})")
                     break
         except: pass
 
+    # Gagal score minimum
     if not setup_name or score < 2:
-        log(f"❌ REJECT: Tiada setup kukuh (Score: {score})")
+        log(f"❌ REJECT: Tiada setup kukuh (Score: {score}, perlu ≥2 untuk proses)")
         return None
 
-    sl = min(curr['l'], swing_low) * 0.995
+    # 6. Kira SL & TP (Moonshot)
+    sl = min(curr['l'], swing_low) * 0.995  # 0.5% buffer bawah wick
     tp1 = swing_high
     tp2 = swing_low + (rng * 1.618)
     tp3 = swing_low + (rng * 2.618)
 
     risk = price - sl
     if risk <= 0:
-        log("❌ REJECT: Risk invalid")
+        log("❌ REJECT: Risk invalid (SL >= Entry)")
         return None
 
     rr1 = (tp1 - price) / risk
     rr2 = (tp2 - price) / risk
 
-    log(f"🎯 COMPLETE: {setup_name} | Score: {score} | RR: 1:{rr2:.1f}")
+    log(f"🎯 SETUP COMPLETE: {setup_name} | Score: {score} | RR: 1:{rr1:.1f}(TP1) 1:{rr2:.1f}(TP2)")
 
     return {
         "setup": setup_name,
@@ -281,16 +294,18 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
         "tp1": tp1, "tp2": tp2, "tp3": tp3,
         "rr1": rr1, "rr2": rr2,
         "score": score,
-        "fib_zone": fib_zone
+        "fib_zone": fib_zone,
+        "swing_high": swing_high,
+        "swing_low": swing_low
     }
 
 # =================================================================
-# 5. SIGNAL GENERATOR
+# 5. SIGNAL GENERATOR (MINIMALIST + HIDDEN FIBO)
 # =================================================================
 def send_signal(sym, smc_data, vol_24h):
     cfg = get_config()
     if smc_data["score"] < cfg["score_pass"]:
-        print(f"[{sym}] ❌ REJECT FINAL: Score {smc_data['score']}/{cfg['score_pass']}")
+        print(f"[{sym}] ❌ REJECT FINAL: Score {smc_data['score']}/{cfg['score_pass']} — bawah threshold preset {cfg['active_preset'].upper()}")
         return False
 
     entry = smc_data["entry"]
@@ -298,26 +313,30 @@ def send_signal(sym, smc_data, vol_24h):
     tp1, tp2, tp3 = smc_data["tp1"], smc_data["tp2"], smc_data["tp3"]
     rr1, rr2 = smc_data["rr1"], smc_data["rr2"]
 
+    # Kira % kerugian/keuntungan (minimalist display)
+    sl_pct = (entry - sl) / entry * 100
+    tp1_pct = (tp1 - entry) / entry * 100
+    tp2_pct = (tp2 - entry) / entry * 100
+    tp3_pct = (tp3 - entry) / entry * 100
+
+    # Keyboard: Direct Gate.io & TradingView (Self Custody, USDT Ready)
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("📊 Gate.io", url=f"https://www.gate.io/trade/{sym}_USDT"),
         InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=GATEIO:{sym}USDT")
     )
 
+    # MINIMALIST FORMAT — Fibonacci HIDDEN dari paparan
     msg = (
-        f"🏴‍☠️ <b>ALPHA SMC SNIPER — {sym}/USDT</b>\n\n"
-        f"┌ <b>STRUKTUR SMC (H1)</b>\n"
-        f"├ Setup : <code>{smc_data['setup']}</code>\n"
-        f"├ Zone  : <code>DISCOUNT ({smc_data['fib_zone']})</code>\n"
-        f"├ Skor  : <code>{smc_data['score']}/{cfg['score_pass']} Confluence</code>\n"
-        f"└ Vol24H: <code>${vol_24h/1e6:.2f}M</code>\n\n"
-        f"🎯 <b>TRADE SETUP (MOONSHOT)</b>\n"
-        f"• ENTRY : <code>${fmt(entry)}</code>\n"
-        f"• SL    : <code>${fmt(sl)}</code> [{(entry-sl)/entry*100:.1f}%]\n"
-        f"• TP1   : <code>${fmt(tp1)}</code> (Swing High | RR 1:{rr1:.1f})\n"
-        f"• TP2   : <code>${fmt(tp2)}</code> (Fib 1.618 | RR 1:{rr2:.1f})\n"
-        f"• TP3   : <code>${fmt(tp3)}</code> (Fib 2.618 | 🌕 Moonbag)\n\n"
-        f"🦅 <i>Edge: Whale trap retail SL di Discount Zone.</i>"
+        f"🏴‍☠️ <b>ALPHA — {sym}</b>\n\n"
+        f"💰 <b>Entry:</b> <code>${fmt(entry)}</code>\n"
+        f"📊 <b>Vol24H:</b> <code>${vol_24h/1e6:.2f}M</code>\n\n"
+        f"🛑 <b>SL:</b> <code>${fmt(sl)}</code> <i>(-{sl_pct:.1f}%)</i>\n"
+        f"📈 <b>TP1:</b> <code>${fmt(tp1)}</code> <i>(+{tp1_pct:.1f}%)</i>\n"
+        f" <b>TP2:</b> <code>${fmt(tp2)}</code> <i>(+{tp2_pct:.1f}%)</i>\n"
+        f"📈 <b>TP3:</b> <code>${fmt(tp3)}</code> <i>(+{tp3_pct:.1f}%)</i>\n\n"
+        f"🧠 <b>Setup:</b> <code>{smc_data['setup']}</code>\n"
+        f"🎯 <b>RR:</b> <code>1:{rr2:.1f}</code> | <b>Score:</b> <code>{smc_data['score']}/{cfg['score_pass']}</code>"
     )
 
     try:
@@ -339,7 +358,7 @@ def send_signal(sym, smc_data, vol_24h):
         return False
 
 # =================================================================
-# 6. SCANNER & TRADE MONITOR
+# 6. SCANNER & TRADE MONITOR (VERBOSE LOGGING)
 # =================================================================
 def scan_once():
     if not IS_SCANNING: return
@@ -347,56 +366,65 @@ def scan_once():
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
 
     print(f"\n{'='*60}")
-    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] SCAN | Preset: {preset_lbl}")
+    print(f" [{datetime.now().strftime('%H:%M:%S')}] SCAN DIMULAKAN | Preset: {preset_lbl}")
     print(f"{'='*60}")
 
     tickers = get_gateio_tickers()
-    print(f"[GATEIO] Total {len(tickers)} pairs USDT")
+    print(f"[GATEIO] Total {len(tickers)} pairs USDT ditemui")
 
+    # Safety Net: Tapis Volume 24H
     candidates = [t for t in tickers if t["volume_24h"] >= cfg["min_vol_24h"]]
     rejected_vol = len(tickers) - len(candidates)
-    print(f"[SAFETY NET] {len(candidates)} lulus Min Vol ${cfg['min_vol_24h']/1e6:.1f}M | {rejected_vol} ditolak")
+    print(f"[SAFETY NET] {len(candidates)} pairs lulus Min Vol ${cfg['min_vol_24h']/1e6:.1f}M | {rejected_vol} ditolak (volume rendah / coin mati)")
 
     passed = 0
-    skipped = {"cooldown": 0, "active": 0, "no_data": 0, "no_setup": 0, "score_low": 0}
+    skipped_reasons = {"cooldown": 0, "active": 0, "no_data": 0, "no_setup": 0, "score_low": 0}
 
     for t in candidates:
         sym = t["symbol"]
 
+        # Cooldown check
         if is_in_cooldown(sym):
-            skipped["cooldown"] += 1
+            skipped_reasons["cooldown"] += 1
             continue
 
-        if sym in get_active_trades():
-            skipped["active"] += 1
+        # Active trade check
+        active = get_active_trades()
+        if sym in active:
+            skipped_reasons["active"] += 1
             continue
 
+        # Ambil H1 Candles
         candles = get_gateio_klines(sym, "1h", 50)
         if len(candles) < 30:
-            skipped["no_data"] += 1
+            skipped_reasons["no_data"] += 1
+            print(f"[{sym}] ❌ REJECT: Data candle tidak cukup ({len(candles)}/30)")
             continue
 
         print(f"\n[{sym}] 🔎 ANALYZING... Vol24H: ${t['volume_24h']/1e6:.2f}M")
+
+        # Analisis SMC (verbose=True untuk log terperinci)
         smc = analyze_smc_pa(candles, sym, verbose=True)
 
         if not smc:
-            skipped["no_setup"] += 1
+            skipped_reasons["no_setup"] += 1
             continue
 
         if smc["score"] < cfg["score_pass"]:
-            skipped["score_low"] += 1
+            skipped_reasons["score_low"] += 1
             continue
 
+        # Hantar signal
         if send_signal(sym, smc, t["volume_24h"]):
             passed += 1
             time.sleep(2)
 
-        time.sleep(0.2)
+        time.sleep(0.2)  # Rate limit Gate.io
 
     print(f"\n{'='*60}")
-    print(f"📊 SELESAI | {passed} signal dihantar")
-    print(f"⏭️  Skip: Cooldown={skipped['cooldown']}, Active={skipped['active']}, "
-          f"NoData={skipped['no_data']}, NoSetup={skipped['no_setup']}, ScoreLow={skipped['score_low']}")
+    print(f" SCAN SELESAI | {passed} signal dihantar")
+    print(f"⏭️  Skip reasons: Cooldown={skipped_reasons['cooldown']}, Active={skipped_reasons['active']}, "
+          f"NoData={skipped_reasons['no_data']}, NoSetup={skipped_reasons['no_setup']}, ScoreLow={skipped_reasons['score_low']}")
     print(f"{'='*60}\n")
 
 def monitor_active_trades():
@@ -412,21 +440,21 @@ def monitor_active_trades():
             updates = {}
             if cp >= trade["tp1"] and not trade.get("tp1_hit"):
                 updates["tp1_hit"] = True
-                bot.send_message(VIP_CHANNEL_ID, f"✅ <b>{sym}</b> TP1! SL → BE: <code>${fmt(trade['entry'])}</code>", parse_mode="HTML")
+                bot.send_message(VIP_CHANNEL_ID, f"✅ <b>{sym}</b> TP1 HIT! Alih SL → BE: <code>${fmt(trade['entry'])}</code>", parse_mode="HTML")
 
             if cp >= trade["tp2"] and not trade.get("tp2_hit"):
                 updates["tp2_hit"] = True
-                bot.send_message(VIP_CHANNEL_ID, f"🚀 <b>{sym}</b> TP2! Trail SL → TP1", parse_mode="HTML")
+                bot.send_message(VIP_CHANNEL_ID, f" <b>{sym}</b> TP2 HIT! Trail SL → TP1", parse_mode="HTML")
 
             if cp >= trade["tp3"] and not trade.get("tp3_hit"):
                 updates["tp3_hit"] = True
                 updates["closed"] = True
-                bot.send_message(VIP_CHANNEL_ID, f"🏆 <b>{sym}</b> TP3 MOONSHOT!", parse_mode="HTML")
+                bot.send_message(VIP_CHANNEL_ID, f"🏆 <b>{sym}</b> TP3 MOONSHOT! (${fmt(cp)})", parse_mode="HTML")
 
             elif cp <= trade["sl"] and not trade.get("sl_hit"):
                 updates["sl_hit"] = True
                 updates["closed"] = True
-                bot.send_message(VIP_CHANNEL_ID, f"❌ <b>{sym}</b> SL HIT.", parse_mode="HTML")
+                bot.send_message(VIP_CHANNEL_ID, f"❌ <b>{sym}</b> SL HIT. Setup Invalidated.", parse_mode="HTML")
 
             if updates: update_signal(sym, updates)
         except Exception as e:
@@ -446,16 +474,21 @@ def cmd_start(msg):
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
 
     text = (
-        f"🏴‍☠️ <b>ALPHA — Gate.io SMC Sniper</b>\n"
+        f"‍☠️ <b>ALPHA — Gate.io SMC Sniper</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱ Uptime   : <code>{uptime_m}m</code>\n"
         f"📊 Trade   : <code>{len(active)} aktif</code>\n"
-        f"🔧 Scan    : <code>{'✅ AKTIF' if IS_SCANNING else '⛔ STOP'}</code>\n\n"
-        f"🎛️ <b>Preset:</b> <code>{preset_lbl}</code>\n\n"
-        f"<b>🛡️ Parameter:</b>\n"
+        f"🔧 Scan    : <code>{'✅ AKTIF' if IS_SCANNING else ' STOP'}</code>\n\n"
+        f"🎛️ <b>Preset Aktif:</b>\n<code>{preset_lbl}</code>\n\n"
+        f"<b>🛡️ Parameter Semasa:</b>\n"
         f"├ Min Vol 24H : <code>${cfg['min_vol_24h']/1e6:.1f}M</code>\n"
         f"├ Score Pass  : <code>{cfg['score_pass']}</code>\n"
-        f"└ Timeframe   : <code>H1 (Close Confirm)</code>"
+        f"├ Cooldown    : <code>{cfg['cooldown_hours']}h</code>\n"
+        f"└ Timeframe   : <code>H1 (Close Confirm)</code>\n\n"
+        f"<b>🧠 Enjin Setup (7):</b>\n"
+        f"1. Breakout Retest | 2. Trend Pullback\n"
+        f"3. Order Block | 4. VPA | 5. Reversal\n"
+        f"6. Bull Flag | 7. Liquidity Sweep ⭐"
     )
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
@@ -466,7 +499,11 @@ def cmd_start(msg):
     kb.add(
         InlineKeyboardButton("▶️ Mula", callback_data="scan_on"),
         InlineKeyboardButton("⏸ Henti", callback_data="scan_off"),
-        InlineKeyboardButton("📓 Journal", callback_data="journal")
+        InlineKeyboardButton(" Journal", callback_data="journal")
+    )
+    kb.add(
+        InlineKeyboardButton(" Status", callback_data="status"),
+        InlineKeyboardButton("❓ Help", callback_data="help")
     )
     bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=kb)
 
@@ -478,17 +515,23 @@ def cb_tune(call):
     ok, lbl = apply_preset(preset)
     if ok:
         p = PRESETS[preset]
-        text = f"✅ <b>PRESET DIAPLIKASI</b>\n\n{lbl}\n\n├ Min Vol: <code>${p['min_vol_24h']/1e6:.1f}M</code>\n└ Pass: <code>{p['score_pass']}</code>"
+        text = (
+            f"✅ <b>PRESET DIAPLIKASI</b>\n\n{lbl}\n\n"
+            f"├ Min Vol : <code>${p['min_vol_24h']/1e6:.1f}M</code>\n"
+            f"└ Pass    : <code>{p['score_pass']}/4</code>\n\n"
+            f"<i>Scan seterusnya akan guna preset ini.</i>"
+        )
         try:
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML")
         except: pass
         alert_admin(f"🎛️ Preset: {lbl}")
 
-@bot.callback_query_handler(func=lambda c: c.data in ["scan_on", "scan_off", "journal"])
+@bot.callback_query_handler(func=lambda c: c.data in ["scan_on", "scan_off", "journal", "status", "help"])
 def cb_actions(call):
     global IS_SCANNING
     if str(call.message.chat.id) != str(ADMIN_ID): return
     bot.answer_callback_query(call.id)
+
     if call.data == "scan_on":
         IS_SCANNING = True
         bot.send_message(call.message.chat.id, "▶️ Scan AKTIF.")
@@ -498,6 +541,10 @@ def cb_actions(call):
         bot.send_message(call.message.chat.id, "⏸ Scan BERHENTI.")
     elif call.data == "journal":
         bot.send_message(call.message.chat.id, generate_journal(), parse_mode="HTML")
+    elif call.data == "status":
+        cmd_status(call.message)
+    elif call.data == "help":
+        cmd_help(call.message)
 
 @bot.message_handler(commands=["tune"])
 def cmd_tune(msg):
@@ -522,23 +569,23 @@ def cmd_pair(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
     parts = msg.text.split()
     if len(parts) < 2:
-        bot.reply_to(msg, "❌ /pair [SYMBOL]")
+        bot.reply_to(msg, "❌ /pair [SYMBOL] (Contoh: /pair BTC)")
         return
     sym = parts[1].upper()
-    bot.reply_to(msg, f"🔍 Analyzing <code>{sym}</code>...", parse_mode="HTML")
+    bot.reply_to(msg, f"🔍 Menganalisa <code>{sym}</code>...", parse_mode="HTML")
 
     def _do():
         candles = get_gateio_klines(sym, "1h", 50)
         if len(candles) < 30:
-            bot.send_message(msg.chat.id, f"❌ {sym}: Data < 30 candles", parse_mode="HTML")
+            bot.send_message(msg.chat.id, f" {sym}: Data candle tidak cukup", parse_mode="HTML")
             return
         smc = analyze_smc_pa(candles, sym, verbose=False)
         if smc:
             bot.send_message(msg.chat.id,
-                f"✅ <b>{sym}</b>\nSetup: <code>{smc['setup']}</code>\nScore: <code>{smc['score']}</code>",
+                f"✅ <b>{sym}</b>\nSetup: <code>{smc['setup']}</code>\nScore: <code>{smc['score']}</code>\nZone: <code>{smc['fib_zone']}</code>",
                 parse_mode="HTML")
         else:
-            bot.send_message(msg.chat.id, f"❌ {sym}: No SMC setup in Discount Zone", parse_mode="HTML")
+            bot.send_message(msg.chat.id, f"❌ {sym}: Tiada setup SMC di Discount Zone", parse_mode="HTML")
     threading.Thread(target=_do).start()
 
 @bot.message_handler(commands=["scan"])
@@ -546,6 +593,21 @@ def cmd_scan(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
     bot.reply_to(msg, "⚙️ Scan dipaksa...")
     threading.Thread(target=scan_once).start()
+
+@bot.message_handler(commands=["status"])
+def cmd_status(msg):
+    if str(msg.chat.id) != str(ADMIN_ID): return
+    cfg = get_config()
+    active = get_active_trades()
+    preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
+    bot.reply_to(msg, (
+        f" <b>STATUS</b>\n"
+        f"Scan  : {'🟢 AKTIF' if IS_SCANNING else ' STOP'}\n"
+        f"Trade : <code>{len(active)}</code> aktif\n\n"
+        f"🎛️ Preset: <code>{preset_lbl}</code>\n"
+        f"Vol   : <code>${cfg['min_vol_24h']/1e6:.1f}M</code>\n"
+        f"Pass  : <code>{cfg['score_pass']}</code>"
+    ), parse_mode="HTML")
 
 @bot.message_handler(commands=["journal"])
 def cmd_journal(msg):
@@ -556,19 +618,27 @@ def cmd_journal(msg):
 def cmd_help(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
     bot.reply_to(msg, (
-        "📖 <b>ARAHAN</b>\n\n"
+        " <b>ARAHAN</b>\n\n"
         "/start          — Menu utama\n"
-        "/scan           — Paksa scan\n"
+        "/scan           — Paksa kitaran scan\n"
         "/pair [SYM]     — Analisis manual\n"
-        "/journal        — Laporan 7 hari\n\n"
-        "🎛️ <b>TUNE:</b>\n"
-        "/tune soft | standard | hard"
+        "/journal        — Laporan 7 hari\n"
+        "/status         — Status semasa\n\n"
+        "🎛️ <b>TUNE PRESET:</b>\n"
+        "/tune           — Papar menu\n"
+        "/tune soft      — Longgar\n"
+        "/tune standard  — Balance\n"
+        "/tune hard      — Ketat\n\n"
+        "<i>Bot akan explain WHY signal lulus/gagal di Render Logs.</i>"
     ), parse_mode="HTML")
 
+# =================================================================
+# 8. JOURNAL
+# =================================================================
 def generate_journal():
     trades = get_signals_since(7)
     if not trades:
-        return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari."
+        return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
 
     total = len(trades)
     tp1_n = sum(1 for t in trades if t.get("tp1_hit"))
@@ -576,17 +646,19 @@ def generate_journal():
     tp3_n = sum(1 for t in trades if t.get("tp3_hit"))
     sl_n = sum(1 for t in trades if t.get("sl_hit"))
     open_n = sum(1 for t in trades if not t.get("closed"))
-    wr = tp1_n / total * 100 if total else 0
 
+    # Setup breakdown
     setups = {}
     for t in trades:
         s = t.get("setup", "Unknown")
         setups[s] = setups.get(s, 0) + 1
     setup_str = " | ".join(f"{k}: {v}" for k, v in sorted(setups.items(), key=lambda x: -x[1]))
 
+    wr = tp1_n / total * 100 if total else 0
+
     return (
         f"📓 <b>ALPHA JOURNAL (7D)</b>\n\n"
-        f"├ Total Signal : <code>{total}</code>\n"
+        f" Total Signal : <code>{total}</code>\n"
         f"├ TP1 Hit      : <code>{tp1_n} ({wr:.0f}%)</code>\n"
         f"├ TP2 Hit      : <code>{tp2_n}</code>\n"
         f"├ TP3 Moonshot : <code>{tp3_n}</code>\n"
@@ -596,7 +668,7 @@ def generate_journal():
     )
 
 # =================================================================
-# 8. SCHEDULER & MAIN
+# 9. SCHEDULER & MAIN
 # =================================================================
 def run_scheduler():
     schedule.every(15).minutes.do(lambda: threading.Thread(target=scan_once).start())
@@ -625,7 +697,8 @@ if __name__ == "__main__":
     alert_admin(
         "🏴‍☠️ ALPHA Gate.io SMC Sniper DEPLOYED\n"
         f"Preset: {PRESETS[get_config()['active_preset']]['label']}\n"
-        "/tune untuk ubah preset"
+        "/tune untuk ubah preset\n"
+        " Monitor Render Logs untuk WHY pass/fail"
     )
     threading.Thread(target=scan_once).start()
     bot.infinity_polling(timeout=20, long_polling_timeout=20)
