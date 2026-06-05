@@ -534,7 +534,7 @@ def scan_once():
                     passed += 1
                     time.sleep(2)
 
-                    if t in momentum_candidates:
+            if t in momentum_candidates:
                 if SCAN_MODE == "both" and is_in_cooldown(sym):
                     continue
                 
