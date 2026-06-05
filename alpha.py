@@ -344,7 +344,8 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
             if c['c'] < c['o'] and c_next['c'] > c_next['o']:
                 bos_size = c_next['c'] - c_next['o']
                 if bos_size > (rng * 0.08) and c['l'] <= price <= c['h']:
-                    if not setup_name: setup_name = " ORDER BLOCK (SMC)"                    score += 1
+                    if not setup_name: setup_name = " ORDER BLOCK (SMC)"                    
+                        score += 1
                     log(f"✅ SETUP 3 DETECTED: Price dalam Order Block (${fmt(c['l'])}-${fmt(c['h'])})")
                     break
         except: pass
