@@ -308,6 +308,7 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
     fib_500 = swing_high - (rng * 0.500)  # Equilibrium
     fib_618 = swing_high - (rng * 0.618)  # ⭐ Golden Ratio (PALING PENTING)
     fib_786 = swing_high - (rng * 0.786)  # Deep retracement
+    fib_zone = f"{fmt(fib_500)} - {fmt(fib_786)}"  # ← PASTIKAN INI ADA
 
     curr = candles[-1]
     prev = candles[-2]
@@ -535,7 +536,7 @@ def scan_once():
         # ── BARU: SKIP STABLECOIN/WRAPPED/LEVERAGED TOKEN ─────
         is_blacklisted, bl_reason = is_blacklisted_symbol(sym)
         if is_blacklisted:
-            skipped_reasons["blacklisted"] += 1
+            print(f"[{sym}] ⛔ SKIP: {bl_reason}")
             continue
         # ── TAMAT SKIP STABLECOIN ─────────────────────────────
 
