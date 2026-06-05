@@ -195,7 +195,8 @@ def fmt(val):
 
 def get_btc_24h_change():
     """Ambil % perubahan BTC 24H dari Binance (Circuit Breaker)."""
-    try:        r = requests.get(
+    try:        
+        r = requests.get(
             "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
             timeout=3
         ).json()
