@@ -309,9 +309,6 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
     fib_618 = swing_high - (rng * 0.618)  # ⭐ Golden Ratio (PALING PENTING)
     fib_786 = swing_high - (rng * 0.786)  # Deep retracement
 
-    # Golden Pocket: 0.618 - 0.786 (institutional entry zone)
-    in_golden_pocket = fib_786 <= price <= fib_618
-
     curr = candles[-1]
     prev = candles[-2]
     price = curr['c']
