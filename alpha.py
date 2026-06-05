@@ -246,6 +246,38 @@ def get_gateio_klines(sym, interval="1h", limit=50):
 # =================================================================
 # 4. ENJIN SMC + PRICE ACTION (H1 TIMEFRAME) — 7 SETUP ENGINE
 # =================================================================
+def get_htf_fibonacci(sym):
+    """
+    Ambil Fibonacci dari H4 (major swing) untuk confluence.
+    Returns: dict dengan fib_618 H4, atau None jika gagal.
+    """
+    try:
+        # Ambil 100 candle H4 = 16 hari
+        candles_h4 = get_gateio_klines(sym, "4h", 100)
+        if len(candles_h4) < 50:
+            return None
+        
+        highs = [c['h'] for c in candles_h4[-100:]]
+        lows = [c['l'] for c in candles_h4[-100:]]
+        
+        swing_high = max(highs)
+        swing_low = min(lows)
+        rng = swing_high - swing_low
+        
+        if rng <= 0:
+            return None
+        
+        fib_618 = swing_high - (rng * 0.618)
+        fib_786 = swing_high - (rng * 0.786)
+        
+        return {
+            "fib_618": fib_618,
+            "fib_786": fib_786,
+            "swing_high": swing_high,
+            "swing_low": swing_low
+        }
+    except Exception:
+        return None
 def analyze_smc_pa(candles, sym="?", verbose=True):
     """
     Mengesan 7 Setup SMC/PA di H1.
@@ -258,10 +290,11 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
         log("❌ REJECT: Data candle < 30 (perlukan sejarah struktur)")
         return None
 
-    highs = [c['h'] for c in candles[-30:]]
-    lows = [c['l'] for c in candles[-30:]]
-    closes = [c['c'] for c in candles[-30:]]
-    volumes = [c['v'] for c in candles[-30:]]
+    # Major Swing: 200 candle H1 = 8 hari (selari dengan swing traders)
+    highs = [c['h'] for c in candles[-200:]]
+    lows = [c['l'] for c in candles[-200:]]
+    closes = [c['c'] for c in candles[-200:]]
+    volumes = [c['v'] for c in candles[-200:]]
 
     swing_high = max(highs)
     swing_low = min(lows)
@@ -270,10 +303,14 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
         log("❌ REJECT: Range terlalu sempit (sideways mati)")
         return None
 
-    # 1. Kira Fibonacci Discount Zone
-    fib_500 = swing_high - (rng * 0.500)
-    fib_786 = swing_high - (rng * 0.786)
-    fib_zone = f"{fmt(fib_500)} - {fmt(fib_786)}"
+    # Fibonacci sebenar (big trader standard)
+    fib_382 = swing_high - (rng * 0.382)  # Shallow pullback
+    fib_500 = swing_high - (rng * 0.500)  # Equilibrium
+    fib_618 = swing_high - (rng * 0.618)  # ⭐ Golden Ratio (PALING PENTING)
+    fib_786 = swing_high - (rng * 0.786)  # Deep retracement
+
+    # Golden Pocket: 0.618 - 0.786 (institutional entry zone)
+    in_golden_pocket = fib_786 <= price <= fib_618
 
     curr = candles[-1]
     prev = candles[-2]
@@ -352,6 +389,19 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
                     log(f"✅ SETUP 3 DETECTED: Price dalam Order Block (${fmt(c['l'])}-${fmt(c['h'])})")
                     break
         except: pass
+    # Multi-Timeframe Confluence
+    htf_fib = get_htf_fibonacci(sym)
+    if htf_fib:
+        # Semak jika H1 Fib 0.618 dekat dengan H4 Fib 0.618 (dalam 2%)
+        h1_fib_618 = fib_618
+        h4_fib_618 = htf_fib["fib_618"]
+    
+        diff_pct = abs(h1_fib_618 - h4_fib_618) / h4_fib_618 * 100
+    
+        if diff_pct < 2.0:
+        # Confluence! Big trader akan masuk sini
+        score += 2  # Bonus besar
+        log(f"✅ MTF CONFLUENCE: H1 Fib 0.618 (${fmt(h1_fib_618)}) ≈ H4 Fib 0.618 (${fmt(h4_fib_618)})")
 
     # Gagal score minimum
     if not setup_name or score < 2:
@@ -508,7 +558,7 @@ def scan_once():
             continue
 
         # Ambil H1 Candles
-        candles = get_gateio_klines(sym, "1h", 50)
+        candles = get_gateio_klines(sym, "1h", 200)
         if len(candles) < 30:
             skipped_reasons["no_data"] += 1
             print(f"[{sym}] ❌ REJECT: Data candle tidak cukup ({len(candles)}/30)")
