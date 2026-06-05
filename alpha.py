@@ -402,8 +402,7 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
         # Confluence! Big trader akan masuk sini
             score += 2  # Bonus besar
             log(f"✅ MTF CONFLUENCE: H1 Fib 0.618 (${fmt(h1_fib_618)}) ≈ H4 Fib 0.618 (${fmt(h4_fib_618)})")
-            except Exception:
-            pass
+            
     # Gagal score minimum
     if not setup_name or score < 2:
         log(f"❌ REJECT: Tiada setup kukuh (Score: {score}, perlu ≥2 untuk proses)")
