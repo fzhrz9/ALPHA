@@ -3,6 +3,8 @@ ALPHA — Gate.io Spot SMC & Price Action Sniper (H1)
 Edge: Buy the dip at Discount Zone (Fib 0.5-0.786), target Moonshot TP.
 7 Setup Engine + VPA Filter + BTC Circuit Breaker + Verbose Logging.
 Minimalist signal format. Fibonacci hidden from display.
++ Cooldown Override (second chance entry)
++ Stablecoin/Wrapped Token Blocklist
 """
 import os, time, json, requests, threading, traceback, schedule
 from telebot import TeleBot
@@ -45,8 +47,7 @@ DEFAULT_CONFIG = {
     "active_preset": "standard"
 }
 
-_config_cache = {}
-_config_loaded_at = 0
+_config_cache = {}_config_loaded_at = 0
 
 def get_config():
     global _config_cache, _config_loaded_at
@@ -91,6 +92,34 @@ def is_in_cooldown(contract):
         return bool(rows and rows[0]["sent_at"] > cutoff)
     except Exception: return False
 
+def check_cooldown_override(contract, current_price):
+    """
+    Cooldown Override — Reset cooldown jika harga turun >20% dari entry asal.
+    Senario: Token pump (fakeout) kemudian dump balik ke sweet spot.
+    Returns True jika override berjaya (cooldown di-reset).    """
+    try:
+        rows = sb.table("signals").select("entry").eq("contract", contract).execute().data
+        if not rows:
+            return False
+        
+        entry_price = rows[0].get("entry", 0)
+        if entry_price <= 0:
+            return False
+        
+        # Kira % penurunan dari entry asal
+        drop_pct = (entry_price - current_price) / entry_price * 100
+        
+        # Jika turun >20%, reset cooldown (second chance entry)
+        if drop_pct > 20:
+            print(f"[OVERRIDE] {contract[:16]}... turun {drop_pct:.1f}% dari entry ${entry_price:.6f} — RESET COOLDOWN")
+            sb.table("sent_pool").delete().eq("key", contract).execute()
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"[OVERRIDE ERROR] {e}")
+        return False
+
 def add_cooldown(contract):
     try: sb.table("sent_pool").upsert({"key": contract, "sent_at": int(time.time())}).execute()
     except: pass
@@ -116,8 +145,45 @@ def get_signals_since(days=7):
     except Exception: return []
 
 # =================================================================
-# 3. HELPER & GATE.IO API + BTC CIRCUIT BREAKER
-# =================================================================
+# 3. HELPER & GATE.IO API + BTC CIRCUIT BREAKER + BLOCKLIST# =================================================================
+
+# ── STABLECOIN & WRAPPED TOKEN BLOCKLIST ──────────────────────
+STABLECOINS = {
+    "USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "FRAX", "LUSD", 
+    "GUSD", "USDD", "FDUSD", "PYUSD", "USDK", "SUSD", "RSR",
+    "EURS", "EURT", "UST", "ALUSD", "MIM", "CUSD", "CEUR",
+    "USD", "USDT.BSC", "USDC.BSC", "USDC.BASE",
+}
+
+WRAPPED_TOKENS = {
+    "WETH", "WBTC", "WBNB", "WSOL", "WMATIC", "WAVAX", "WFTM",
+    "WROSE", "WONE", "WCRO", "WGLMR", "WMOVR", "WDEV",
+    "BETH", "STETH", "RETH", "CBETH", "WBETH",
+}
+
+SYMBOL_BLACKLIST = STABLECOINS | WRAPPED_TOKENS
+
+def is_blacklisted_symbol(sym):
+    """Semak jika token adalah stablecoin atau wrapped token."""
+    s = sym.upper().strip()
+    
+    # Direct match
+    if s in SYMBOL_BLACKLIST:
+        return True, f"Blacklisted: {s}"
+    
+    # Partial match (contoh: wUSDC, USDT.BSC)
+    for blacklisted in SYMBOL_BLACKLIST:
+        if blacklisted in s:
+            return True, f"Blacklisted (partial): {s}"
+    
+    # Leveraged tokens (5L, 5S, 3L, 3S, 2L, 2S, UP, DOWN, BULL, BEAR)
+    for suffix in ["5L", "5S", "3L", "3S", "2L", "2S", "1L", "1S", "UP", "DOWN", "BULL", "BEAR"]:
+        if s.endswith(suffix):
+            return True, f"Leveraged token: {s}"
+    
+    return False, None
+# ── TAMAT BLOCKLIST ───────────────────────────────────────────
+
 def fmt(val):
     if val == 0: return "0.00"
     if abs(val) < 0.000001: return f"{val:.10f}"
@@ -128,8 +194,7 @@ def fmt(val):
 
 def get_btc_24h_change():
     """Ambil % perubahan BTC 24H dari Binance (Circuit Breaker)."""
-    try:
-        r = requests.get(
+    try:        r = requests.get(
             "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
             timeout=3
         ).json()
@@ -138,7 +203,7 @@ def get_btc_24h_change():
         return 0.0
 
 def get_gateio_tickers():
-    """Ambil semua pair USDT di Gate.io beserta Volume 24H"""
+    """Ambil semua pair USDT di Gate.io beserta Volume 24H & Last Price"""
     try:
         r = requests.get("https://api.gateio.ws/api/v4/spot/tickers", timeout=10).json()
         pairs = []
@@ -146,7 +211,13 @@ def get_gateio_tickers():
             if t['currency_pair'].endswith('_USDT'):
                 sym = t['currency_pair'].replace('_USDT', '')
                 vol = float(t.get('quote_volume', 0))
-                pairs.append({"symbol": sym, "volume_24h": vol, "pair": t['currency_pair']})
+                last_price = float(t.get('last', 0))
+                pairs.append({
+                    "symbol": sym, 
+                    "volume_24h": vol, 
+                    "last_price": last_price,
+                    "pair": t['currency_pair']
+                })
         return pairs
     except Exception as e:
         print(f"[GATEIO TICKERS] Error: {e}")
@@ -172,8 +243,7 @@ def get_gateio_klines(sym, interval="1h", limit=50):
 # 4. ENJIN SMC + PRICE ACTION (H1 TIMEFRAME) — 7 SETUP ENGINE
 # =================================================================
 def analyze_smc_pa(candles, sym="?", verbose=True):
-    """
-    Mengesan 7 Setup SMC/PA di H1.
+    """    Mengesan 7 Setup SMC/PA di H1.
     Syarat Wajib: Harga mesti di Discount Zone (Fib 0.5 - 0.786).
     Returns: dict dengan setup, entry, sl, tp1, tp2, tp3, score, fib_zone ATAU None
     """
@@ -222,8 +292,7 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
 
     # 4. VPA (Volume Price Analysis)
     avg_vol = sum(volumes[-20:]) / 20 if sum(volumes[-20:]) > 0 else 1
-    curr_vol = curr['v']
-    vpa_dry = curr_vol < (avg_vol * 0.8)  # Volume mengecil = pullback sihat
+    curr_vol = curr['v']    vpa_dry = curr_vol < (avg_vol * 0.8)  # Volume mengecil = pullback sihat
 
     # 5. Kesan Setup (Scoring Matrix)
     setup_name = None
@@ -243,7 +312,7 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
                     curr['c'] > prev['o'] and curr['o'] < prev['c'])
 
     if is_pinbar:
-        if not setup_name: setup_name = "🕯️ PINBAR REVERSAL"
+        if not setup_name: setup_name = "️ PINBAR REVERSAL"
         score += 2
         log("✅ SETUP 5 DETECTED: Pinbar dengan ekor panjang (buyer kuat)")
     elif is_engulfing:
@@ -272,8 +341,7 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
             if c['c'] < c['o'] and c_next['c'] > c_next['o']:
                 bos_size = c_next['c'] - c_next['o']
                 if bos_size > (rng * 0.08) and c['l'] <= price <= c['h']:
-                    if not setup_name: setup_name = "🧱 ORDER BLOCK (SMC)"
-                    score += 1
+                    if not setup_name: setup_name = " ORDER BLOCK (SMC)"                    score += 1
                     log(f"✅ SETUP 3 DETECTED: Price dalam Order Block (${fmt(c['l'])}-${fmt(c['h'])})")
                     break
         except: pass
@@ -323,7 +391,6 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     sl = smc_data["sl"]
     tp1, tp2, tp3 = smc_data["tp1"], smc_data["tp2"], smc_data["tp3"]
     rr1, rr2 = smc_data["rr1"], smc_data["rr2"]
-
     # Kira % kerugian/keuntungan (minimalist display)
     sl_pct = (entry - sl) / entry * 100
     tp1_pct = (tp1 - entry) / entry * 100
@@ -373,7 +440,6 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     except Exception as e:
         alert_admin(f"Gagal hantar signal {sym}: {e}")
         return False
-
 # =================================================================
 # 6. SCANNER & TRADE MONITOR (VERBOSE LOGGING)
 # =================================================================
@@ -392,7 +458,7 @@ def scan_once():
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
 
     print(f"\n{'='*60}")
-    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] SCAN DIMULAKAN | Preset: {preset_lbl}")
+    print(f" [{datetime.now().strftime('%H:%M:%S')}] SCAN DIMULAKAN | Preset: {preset_lbl}")
     print(f"{'='*60}")
 
     tickers = get_gateio_tickers()
@@ -404,15 +470,26 @@ def scan_once():
     print(f"[SAFETY NET] {len(candidates)} pairs lulus Min Vol ${cfg['min_vol_24h']/1e6:.1f}M | {rejected_vol} ditolak (volume rendah / coin mati)")
 
     passed = 0
-    skipped_reasons = {"cooldown": 0, "active": 0, "no_data": 0, "no_setup": 0, "score_low": 0}
+    skipped_reasons = {"cooldown": 0, "active": 0, "no_data": 0, "no_setup": 0, "score_low": 0, "blacklisted": 0}
 
     for t in candidates:
         sym = t["symbol"]
+        current_price = t.get("last_price", 0)
 
-        # Cooldown check
-        if is_in_cooldown(sym):
-            skipped_reasons["cooldown"] += 1
+        # ── BARU: SKIP STABLECOIN/WRAPPED/LEVERAGED TOKEN ─────
+        is_blacklisted, bl_reason = is_blacklisted_symbol(sym)
+        if is_blacklisted:
+            skipped_reasons["blacklisted"] += 1
             continue
+        # ── TAMAT SKIP STABLECOIN ─────────────────────────────
+
+        # Semak cooldown dengan OVERRIDE (second chance entry)
+        if is_in_cooldown(sym):
+            if check_cooldown_override(sym, current_price):
+                print(f"[{sym}] 🔄 OVERRIDE: Cooldown di-reset (harga turun >20% dari entry)")
+                # Teruskan scan — jangan continue
+            else:                skipped_reasons["cooldown"] += 1
+                continue
 
         # Active trade check
         active = get_active_trades()
@@ -449,7 +526,7 @@ def scan_once():
 
     print(f"\n{'='*60}")
     print(f"📊 SCAN SELESAI | {passed} signal dihantar")
-    print(f"⏭️  Skip reasons: Cooldown={skipped_reasons['cooldown']}, Active={skipped_reasons['active']}, "
+    print(f"⏭️  Skip reasons: Blacklisted={skipped_reasons['blacklisted']}, Cooldown={skipped_reasons['cooldown']}, Active={skipped_reasons['active']}, "
           f"NoData={skipped_reasons['no_data']}, NoSetup={skipped_reasons['no_setup']}, ScoreLow={skipped_reasons['score_low']}")
     print(f"{'='*60}\n")
 
@@ -460,8 +537,7 @@ def monitor_active_trades():
     for sym, trade in active.items():
         try:
             candles = get_gateio_klines(sym, "1h", 5)
-            if not candles: continue
-            cp = candles[-1]['c']
+            if not candles: continue            cp = candles[-1]['c']
 
             # Ambil msg_id dari signal asal
             mid = trade.get("msg_id")
@@ -485,7 +561,7 @@ def monitor_active_trades():
                 notify(
                     f"✅ <b>{sym} — TP1 HIT!</b>\n"
                     f"💰 Harga: <code>${fmt(cp)}</code>\n"
-                    f"🔒 Alih SL → BE: <code>${fmt(trade['entry'])}</code>"
+                    f" Alih SL → BE: <code>${fmt(trade['entry'])}</code>"
                 )
 
             if cp >= trade["tp2"] and not trade.get("tp2_hit"):
@@ -501,7 +577,7 @@ def monitor_active_trades():
                 updates["closed"] = True
                 profit_pct = (cp - trade["entry"]) / trade["entry"] * 100
                 notify(
-                    f"🏆 <b>{sym} — TP3 MOONSHOT!</b>\n"
+                    f" <b>{sym} — TP3 MOONSHOT!</b>\n"
                     f"💰 Tutup: <code>${fmt(cp)}</code>\n"
                     f"📊 Profit: <code>+{profit_pct:.1f}%</code>\n"
                     f"🎯 Trade ditutup dengan jayanya."
@@ -510,12 +586,11 @@ def monitor_active_trades():
             elif cp <= trade["sl"] and not trade.get("sl_hit"):
                 updates["sl_hit"] = True
                 updates["closed"] = True
-                loss_pct = (cp - trade["entry"]) / trade["entry"] * 100
-                notify(
-                    f" <b>{sym} — SL HIT</b>\n"
+                loss_pct = (cp - trade["entry"]) / trade["entry"] * 100                notify(
+                    f"❌ <b>{sym} — SL HIT</b>\n"
                     f"💰 Tutup: <code>${fmt(cp)}</code>\n"
                     f"📉 Loss: <code>{loss_pct:.1f}%</code>\n"
-                    f"⚠️ Setup invalidated."
+                    f"️ Setup invalidated."
                 )
 
             if updates:
@@ -539,7 +614,7 @@ def cmd_start(msg):
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
 
     text = (
-        f"🏴‍☠️ <b>ALPHA — Gate.io SMC Sniper</b>\n"
+        f"🏴‍️ <b>ALPHA — Gate.io SMC Sniper</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏱ Uptime   : <code>{uptime_m}m</code>\n"
         f"📊 Trade   : <code>{len(active)} aktif</code>\n"
@@ -560,10 +635,9 @@ def cmd_start(msg):
         InlineKeyboardButton("🟢 Soft", callback_data="tune:soft"),
         InlineKeyboardButton("🟡 Standard", callback_data="tune:standard"),
         InlineKeyboardButton("🔴 Hard", callback_data="tune:hard")
-    )
-    kb.add(
+    )    kb.add(
         InlineKeyboardButton("▶️ Mula", callback_data="scan_on"),
-        InlineKeyboardButton("⏸ Henti", callback_data="scan_off"),
+        InlineKeyboardButton(" Henti", callback_data="scan_off"),
         InlineKeyboardButton("📓 Journal", callback_data="journal")
     )
     kb.add(
@@ -610,7 +684,6 @@ def cb_actions(call):
         cmd_status(call.message)
     elif call.data == "help":
         cmd_help(call.message)
-
 @bot.message_handler(commands=["tune"])
 def cmd_tune(msg):
     if str(msg.chat.id) != str(ADMIN_ID): return
@@ -642,7 +715,7 @@ def cmd_pair(msg):
     def _do():
         candles = get_gateio_klines(sym, "1h", 50)
         if len(candles) < 30:
-            bot.send_message(msg.chat.id, f"❌ {sym}: Data candle tidak cukup", parse_mode="HTML")
+            bot.send_message(msg.chat.id, f" {sym}: Data candle tidak cukup", parse_mode="HTML")
             return
         smc = analyze_smc_pa(candles, sym, verbose=False)
         if smc:
@@ -660,8 +733,7 @@ def cmd_scan(msg):
     threading.Thread(target=scan_once).start()
 
 @bot.message_handler(commands=["status"])
-def cmd_status(msg):
-    if str(msg.chat.id) != str(ADMIN_ID): return
+def cmd_status(msg):    if str(msg.chat.id) != str(ADMIN_ID): return
     cfg = get_config()
     active = get_active_trades()
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
@@ -703,7 +775,7 @@ def cmd_help(msg):
 def generate_journal():
     trades = get_signals_since(7)
     if not trades:
-        return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
+        return " <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
 
     total = len(trades)
     tp1_n = sum(1 for t in trades if t.get("tp1_hit"))
@@ -711,7 +783,6 @@ def generate_journal():
     tp3_n = sum(1 for t in trades if t.get("tp3_hit"))
     sl_n = sum(1 for t in trades if t.get("sl_hit"))
     open_n = sum(1 for t in trades if not t.get("closed"))
-
     # Setup breakdown
     setups = {}
     for t in trades:
@@ -722,7 +793,7 @@ def generate_journal():
     wr = tp1_n / total * 100 if total else 0
 
     return (
-        f"📓 <b>ALPHA JOURNAL (7D)</b>\n\n"
+        f" <b>ALPHA JOURNAL (7D)</b>\n\n"
         f"├ Total Signal : <code>{total}</code>\n"
         f"├ TP1 Hit      : <code>{tp1_n} ({wr:.0f}%)</code>\n"
         f"├ TP2 Hit      : <code>{tp2_n}</code>\n"
@@ -760,8 +831,7 @@ if __name__ == "__main__":
 
     time.sleep(5)
     alert_admin(
-        "🏴‍☠️ ALPHA Gate.io SMC Sniper DEPLOYED\n"
-        f"Preset: {PRESETS[get_config()['active_preset']]['label']}\n"
+        "‍☠️ ALPHA Gate.io SMC Sniper DEPLOYED\n"        f"Preset: {PRESETS[get_config()['active_preset']]['label']}\n"
         "/tune untuk ubah preset\n"
         "📊 Monitor Render Logs untuk WHY pass/fail"
     )
