@@ -534,18 +534,55 @@ def scan_once():
                     passed += 1
                     time.sleep(2)
 
-        # ENGINE 2: MOMENTUM (M15) - HANYA TOP 100 VOLUME
-        if SCAN_MODE in ["momentum", "both"]:
-            if t in momentum_candidates:
+                    if t in momentum_candidates:
                 if SCAN_MODE == "both" and is_in_cooldown(sym):
                     continue
-                smc_m15 = analyze_early_momentum(sym, verbose=True)
-                if smc_m15 and smc_m15["score"] >= cfg["score_pass"]:
-                    if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
-                        passed += 1
-                        time.sleep(2)
-
-        time.sleep(0.3)  # Rate limit safety
+                
+                # Ambil data M15 untuk check awal
+                candles_m15 = get_gateio_klines(sym, "15m", 100)
+                if len(candles_m15) < 50: continue
+                
+                # Check 1: Volume Anomaly
+                avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
+                curr_vol = candles_m15[-1]['v']
+                
+                if curr_vol >= (avg_vol * 3):
+                    # ✅ VOLUME ANOMALY LULUS! Simpan dalam Watchlist
+                    if sym not in WATCHLIST:
+                        WATCHLIST[sym] = time.time()
+                        print(f"[{sym}] 📌 MASUK WATCHLIST: Volume Anomaly ({curr_vol/avg_vol:.1f}x)")
+                    
+                    # Check 2 & 3: Accumulation & Price Action
+                    highs = [c['h'] for c in candles_m15[-50:]]
+                    lows = [c['l'] for c in candles_m15[-50:]]
+                    range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+                    
+                    curr = candles_m15[-1]
+                    prev = candles_m15[-2]
+                    body = abs(curr['c'] - curr['o'])
+                    lower_wick = min(curr['o'], curr['c']) - curr['l']
+                    is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
+                    is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and
+                                    curr['c'] > prev['o'] and curr['o'] < prev['c'])
+                    
+                    # Jika SEMUA syarat cukup, terus tembak!
+                    if range_pct <= 5 and (is_pinbar or is_engulfing):
+                        smc_m15 = {
+                            "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else " ENGULFING MOMENTUM",
+                            "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
+                            "tp1": max(highs[-50:]) * 1.02,
+                            "tp2": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 3,
+                            "tp3": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 5,
+                            "rr1": 0, "rr2": 0, "score": 3,
+                            "fib_zone": "N/A", "timeframe": "M15",
+                            "vol_spike": curr_vol / avg_vol, "range_pct": range_pct
+                        }
+                        if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
+                            passed += 1
+                            if sym in WATCHLIST: del WATCHLIST[sym]
+                            time.sleep(2)
+                else:
+                    if sym in WATCHLIST: del WATCHLIST[sym]
 
     print(f"\n📊 SCAN SELESAI | {passed} signal dihantar")
     print(f"{'='*60}\n")
@@ -601,6 +638,10 @@ def monitor_active_trades():
 # 8. TELEGRAM COMMANDS
 # =================================================================
 IS_SCANNING = True
+# ── FAST TRACK WATCHLIST ──────────────────────────────────────
+WATCHLIST = {}  # Simpan token yang "hampir lulus"
+WATCHLIST_TIMEOUT = 600  # 10 minit timeout
+# ─ TAMAT WATCHLIST ───────────────────────────────────────────
 
 @bot.message_handler(commands=["start", "menu"])
 def cmd_start(msg):
@@ -822,9 +863,63 @@ def generate_journal():
 # =================================================================
 # 10. SCHEDULER & MAIN
 # =================================================================
+def fast_track_watchlist():
+    """Micro-Scan setiap 30 saat untuk token dalam Watchlist."""
+    if not IS_SCANNING or not WATCHLIST: return
+
+    print(f"\n[FAST TRACK] Checking {len(WATCHLIST)} tokens...")
+    symbols_to_remove = []
+
+    for sym, added_time in list(WATCHLIST.items()):
+        if time.time() - added_time > WATCHLIST_TIMEOUT:
+            symbols_to_remove.append(sym)
+            continue
+
+        try:
+            candles = get_gateio_klines(sym, "15m", 50)
+            if len(candles) < 20: continue
+
+            highs = [c['h'] for c in candles[-50:]]
+            lows = [c['l'] for c in candles[-50:]]
+            range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+            
+            curr = candles[-1]
+            prev = candles[-2]
+            body = abs(curr['c'] - curr['o'])
+            lower_wick = min(curr['o'], curr['c']) - curr['l']
+            is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
+            is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and
+                            curr['c'] > prev['o'] and curr['o'] < prev['c'])
+
+            if range_pct <= 5 and (is_pinbar or is_engulfing):
+                avg_vol = sum(c['v'] for c in candles[-20:-1]) / 19
+                vol_spike = curr['v'] / avg_vol if avg_vol > 0 else 0
+                
+                smc_m15 = {
+                    "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else "⚡ ENGULFING MOMENTUM",
+                    "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
+                    "tp1": max(highs[-50:]) * 1.02,
+                    "tp2": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 3,
+                    "tp3": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 5,
+                    "rr1": 0, "rr2": 0, "score": 3,
+                    "fib_zone": "N/A", "timeframe": "M15",
+                    "vol_spike": vol_spike, "range_pct": range_pct
+                }
+                
+                if send_signal(sym, smc_m15, 0, btc_chg=0.0):
+                    symbols_to_remove.append(sym)
+                    print(f"[{sym}] 🚀 TRIGGERED FROM WATCHLIST!")
+        except Exception as e:
+            print(f"[FAST TRACK ERROR] {sym}: {e}")
+
+    for sym in symbols_to_remove:
+        if sym in WATCHLIST: del WATCHLIST[sym]
+
 def run_scheduler():
     schedule.every(5).minutes.do(lambda: threading.Thread(target=scan_once).start())
     schedule.every(5).minutes.do(lambda: threading.Thread(target=monitor_active_trades).start())
+    # Fast Track Micro-Scan setiap 30 saat
+    schedule.every(30).seconds.do(lambda: threading.Thread(target=fast_track_watchlist).start())
     while True:
         schedule.run_pending()
         time.sleep(30)
