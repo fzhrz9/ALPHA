@@ -294,7 +294,8 @@ def analyze_smc_pa(candles, sym="?", verbose=True):
 
     # 4. VPA (Volume Price Analysis)
     avg_vol = sum(volumes[-20:]) / 20 if sum(volumes[-20:]) > 0 else 1
-    curr_vol = curr['v']    vpa_dry = curr_vol < (avg_vol * 0.8)  # Volume mengecil = pullback sihat
+    curr_vol = curr['v']    
+    vpa_dry = curr_vol < (avg_vol * 0.8)  # Volume mengecil = pullback sihat
 
     # 5. Kesan Setup (Scoring Matrix)
     setup_name = None
