@@ -47,7 +47,8 @@ DEFAULT_CONFIG = {
     "active_preset": "standard"
 }
 
-_config_cache = {}_config_loaded_at = 0
+_config_cache = {}
+_config_loaded_at = 0
 
 def get_config():
     global _config_cache, _config_loaded_at
