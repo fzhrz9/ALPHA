@@ -313,18 +313,27 @@ def analyze_smc_pa(sym, verbose=True):
     # 1. H4 TREND CONFIRMATION (Big Trader Filter)
     candles_h4 = get_gateio_klines(sym, "4h", 50)
     if len(candles_h4) >= 20:
-        h4_closes = [c['c'] for c in candles_h4[-20:]]
-        h4_ema20 = calculate_ema(h4_closes, 20)
-        h4_current = candles_h4[-1]['c']
-        if h4_current < h4_ema20 * 0.95:
-            log("❌ REJECT: H4 Downtrend kuat (bawah EMA20)")
+        h4_swings = find_fractal_swings(candles_h4, lookback=1)
+        h4_structure = check_market_structure(h4_swings)
+        if h4_structure == 'downtrend':
+            log("❌ REJECT: H4 structure downtrend (LH/LL)")
             return None
+        elif h4_structure == 'unknown':
+            log("⚠️ H4 structure unknown, skip H4 filter")
 
     # 2. FRACTAL SWING POINTS (BUKAN max/min)
     swings = find_fractal_swings(candles, lookback=2)
     if len(swings) < 4:
-        log("❌ REJECT: Tidak cukup swing points untuk struktur")
-        return None
+        log("⚠️ Fractal swings tidak cukup, guna simple swing fallback")
+        recent_50 = candles[-50:]
+        simple_sh = max(c['h'] for c in recent_50)
+        simple_sl = min(c['l'] for c in recent_50)
+        swings = [
+            {'type': 'SH', 'price': simple_sh, 'index': -10},
+            {'type': 'SL', 'price': simple_sl, 'index': -25},
+            {'type': 'SH', 'price': simple_sh * 0.99, 'index': -40},
+            {'type': 'SL', 'price': simple_sl * 1.01, 'index': -45}
+        ]
 
     # 3. SEMAK STRUKTUR MARKET (HH/HL)
     structure = check_market_structure(swings)
@@ -391,8 +400,7 @@ def analyze_smc_pa(sym, verbose=True):
     avg_pullback_vol = sum(pullback_vols) / len(pullback_vols) if pullback_vols else 1
 
     curr_vol = curr['v']
-    # VPA sihat: volume pullback < 50% volume impulse
-    vpa_dry = avg_pullback_vol < (avg_impulse_vol * 0.5)
+    vpa_dry = avg_pullback_vol < (avg_impulse_vol * 0.7)
 
     # 8. KIRA ATR UNTUK SETUP DETECTION
     atr = calculate_atr(candles, 14)
@@ -450,9 +458,9 @@ def analyze_smc_pa(sym, verbose=True):
     # ─── SETUP 4: VPA CONFIRMATION ────────────────────────────
     if vpa_dry:
         score += 1
-        log(f"✅ VPA PASS: Pullback vol < 50% impulse vol")
+        log(f"✅ VPA PASS: Pullback vol < 70% impulse vol")
     else:
-        log("⚠️ VPA WEAK")
+        log("️ VPA WEAK (Optional - tidak reject)")
 
     # ─── SETUP 2: TREND PULLBACK (EMA SEBENAR) ────────────────
     if (is_uptrend and
