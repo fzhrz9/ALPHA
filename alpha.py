@@ -323,20 +323,26 @@ def analyze_smc_pa(sym, verbose=True):
 
     # 2. FRACTAL SWING POINTS (BUKAN max/min)
     swings = find_fractal_swings(candles, lookback=2)
-    if len(swings) < 4:
-        log("⚠️ Fractal swings tidak cukup, guna simple swing fallback")
-        recent_50 = candles[-50:]
-        simple_sh = max(c['h'] for c in recent_50)
-        simple_sl = min(c['l'] for c in recent_50)
-        swings = [
-            {'type': 'SH', 'price': simple_sh, 'index': -10},
-            {'type': 'SL', 'price': simple_sl, 'index': -25},
-            {'type': 'SH', 'price': simple_sh * 0.99, 'index': -40},
-            {'type': 'SL', 'price': simple_sl * 1.01, 'index': -45}
-        ]
-
-    # 3. SEMAK STRUKTUR MARKET (HH/HL)
-    structure = check_market_structure(swings)
+    
+    # 3. SEMAK STRUKTUR MARKET
+    if len(swings) >= 4:
+        # Guna fractal structure jika cukup data
+        structure = check_market_structure(swings)
+    else:
+        # FALLBACK: Guna EMA20 vs EMA50 (Big Trader Standard)
+        log("⚠️ Fractal swings tidak cukup, guna EMA trend detection")
+        closes = [c['c'] for c in candles[-200:]]
+        ema20 = calculate_ema(closes, 20)
+        ema50 = calculate_ema(closes, 50)
+        current_price = candles[-1]['c']
+        
+        if ema20 > ema50 and current_price > ema20:
+            structure = 'uptrend'
+        elif ema20 < ema50 and current_price < ema20:
+            structure = 'downtrend'
+        else:
+            structure = 'unknown'
+    
     if structure == 'downtrend':
         log(f"❌ REJECT: Market structure downtrend (LH/LL)")
         return None
