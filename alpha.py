@@ -270,25 +270,44 @@ def find_fractal_swings(candles, lookback=2):
     return swings
 
 def check_market_structure(swings):
-    """
-    Semak struktur market: HH/HL (uptrend) atau LH/LL (downtrend).
-    Returns: 'uptrend', 'downtrend', atau 'unknown'
-    """
-    if len(swings) < 4:
+    """Semak struktur market secara fleksibel (Institutional SMC)."""
+    if len(swings) < 2:
         return 'unknown'
-    # Ambil 4 swing terakhir
-    recent = swings[-4:]
-    shs = [s for s in recent if s['type'] == 'SH']
-    sls = [s for s in recent if s['type'] == 'SL']
-    if len(shs) < 2 or len(sls) < 2:
-        return 'unknown'
-    sh1, sh2 = shs[-2]['price'], shs[-1]['price']
-    sl1, sl2 = sls[-2]['price'], sls[-1]['price']
-    if sh2 > sh1 and sl2 > sl1:
+        
+    recent_swings = swings[-4:]
+    highs = [s for s in recent_swings if s['type'] == 'SH']
+    lows = [s for s in recent_swings if s['type'] == 'SL']
+    
+    # Fallback jika data bercampur (contoh: 3 SH, 1 SL)
+    if len(highs) < 2 or len(lows) < 2:
+        last_swing = recent_swings[-1]
+        prev_swing = recent_swings[-2] if len(recent_swings) >= 2 else None
+        
+        if last_swing['type'] == 'SH' and prev_swing and prev_swing['type'] == 'SH':
+            return 'uptrend' if last_swing['price'] > prev_swing['price'] else 'downtrend'
+        elif last_swing['type'] == 'SL' and prev_swing and prev_swing['type'] == 'SL':
+            return 'downtrend' if last_swing['price'] < prev_swing['price'] else 'uptrend'
+        return 'sideway'
+
+    # Susun mengikut urutan kronologi
+    highs.sort(key=lambda x: x['index'])
+    lows.sort(key=lambda x: x['index'])
+    
+    is_higher_high = highs[-1]['price'] > highs[-2]['price']
+    is_higher_low = lows[-1]['price'] > lows[-2]['price']
+    
+    is_lower_high = highs[-1]['price'] < highs[-2]['price']
+    is_lower_low = lows[-1]['price'] < lows[-2]['price']
+    
+    # Keputusan Struktur
+    if is_higher_high and is_higher_low:
         return 'uptrend'
-    elif sh2 < sh1 and sl2 < sl1:
+    elif is_lower_high and is_lower_low:
         return 'downtrend'
-    return 'unknown'
+    elif is_higher_high and not is_lower_low:
+        return 'uptrend_breakout'
+    else:
+        return 'sideway'
 
 # =================================================================
 # 4. ENGINE 1: PULLBACK SMC (H1 + H4) — INSTITUTIONAL GRADE
@@ -346,7 +365,31 @@ def analyze_smc_pa(sym, verbose=True):
     if structure == 'downtrend':
         log(f"❌ REJECT: Market structure downtrend (LH/LL)")
         return None
-    log(f"✅ STRUCTURE: {structure}")
+    elif structure in ['uptrend', 'uptrend_breakout', 'sideway']:
+        log(f"✅ STRUCTURE: {structure}")
+    else:
+        log(f"⚠️ STRUCTURE: {structure} (Proceed with caution)")
+
+    # ── DETECT PENDING BOS (Untuk Real-Time Signal) ───────────
+    shs_list = [s for s in swings if s['type'] == 'SH']
+    sls_list = [s for s in swings if s['type'] == 'SL']
+    
+    if len(sls_list) >= 2:
+        last_hl = sls_list[-1]['price']
+        distance = abs(price - last_hl) / last_hl * 100
+        if distance <= 2.0 and price > last_hl:
+            if sym not in BOS_WATCHLIST:
+                BOS_WATCHLIST[sym] = {"level": last_hl, "type": "HL", "added": time.time()}
+                log(f"📌 PENDING BOS: HL ${fmt(last_hl)} (jarak {distance:.1f}%)")
+                
+    if len(shs_list) >= 2:
+        last_lh = shs_list[-1]['price']
+        distance = abs(price - last_lh) / last_lh * 100
+        if distance <= 2.0 and price < last_lh:
+            if sym not in BOS_WATCHLIST:
+                BOS_WATCHLIST[sym] = {"level": last_lh, "type": "LH", "added": time.time()}
+                log(f"📌 PENDING BOS: LH ${fmt(last_lh)} (jarak {distance:.1f}%)")
+    # ── TAMAT DETECT PENDING BOS ──────────────────────────────
 
     # Ambil swing high/low dari fractal (bukan max/min)
     shs = [s for s in swings if s['type'] == 'SH']
@@ -684,8 +727,12 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
 # 7. SCANNER & TRADE MONITOR
 # =================================================================
 IS_SCANNING = True
-WATCHLIST = {}
-WATCHLIST_TIMEOUT = 600
+WATCHLIST = {}  # Simpan token yang "hampir lulus"
+WATCHLIST_TIMEOUT = 600  # 10 minit timeout
+
+# ── BOS (Break of Structure) WATCHLIST ────────────────────────
+BOS_WATCHLIST = {}  # Format: {"SYMBOL": {"level": price, "type": "HL"/"LH", "added": time}}
+# ── TAMAT BOS WATCHLIST ───────────────────────────────────────
 
 def scan_once():
     if not IS_SCANNING:
@@ -1170,10 +1217,61 @@ def fast_track_watchlist():
         if sym in WATCHLIST:
             del WATCHLIST[sym]
 
+def monitor_bos_breaks():
+    """Monitor BOS Watchlist setiap 15 saat. Instant signal bila break."""
+    if not IS_SCANNING or not BOS_WATCHLIST:
+        return
+
+    symbols_to_remove = []
+    for sym, data in list(BOS_WATCHLIST.items()):
+        try:
+            if time.time() - data["added"] > 1800: # Timeout 30 minit
+                symbols_to_remove.append(sym)
+                continue
+
+            current_price = get_gateio_price(sym)
+            if current_price <= 0: continue
+
+            level = data["level"]
+            bos_type = data["type"]
+
+            # DETECT BREAK!
+            if bos_type == "HL" and current_price < level:
+                print(f"[{sym}] 💥 BOS BREAK! HL ${fmt(level)} ditembusi @ ${fmt(current_price)}")
+                smc_bos = {
+                    "setup": "💥 BOS BREAK (HL Tembus - Bearish)",
+                    "entry": current_price, "sl": level * 1.02,
+                    "tp1": current_price * 0.95, "tp2": current_price * 0.90, "tp3": current_price * 0.85,
+                    "rr1": 2.5, "rr2": 5.0, "score": 4, "fib_zone": "N/A", "timeframe": "M5"
+                }
+                if send_signal(sym, smc_bos, 0, btc_chg=0.0):
+                    symbols_to_remove.append(sym)
+
+            elif bos_type == "LH" and current_price > level:
+                print(f"[{sym}] 💥 BOS BREAK! LH ${fmt(level)} ditembusi @ ${fmt(current_price)}")
+                smc_bos = {
+                    "setup": "💥 BOS BREAK (LH Tembus - Bullish)",
+                    "entry": current_price, "sl": level * 0.98,
+                    "tp1": current_price * 1.05, "tp2": current_price * 1.10, "tp3": current_price * 1.15,
+                    "rr1": 2.5, "rr2": 5.0, "score": 4, "fib_zone": "N/A", "timeframe": "M5"
+                }
+                if send_signal(sym, smc_bos, 0, btc_chg=0.0):
+                    symbols_to_remove.append(sym)
+        except Exception as e:
+            print(f"[BOS ERROR] {sym}: {e}")
+
+    for sym in symbols_to_remove:
+        if sym in BOS_WATCHLIST: del BOS_WATCHLIST[sym]
+
 def run_scheduler():
     schedule.every(5).minutes.do(lambda: threading.Thread(target=scan_once).start())
     schedule.every(5).minutes.do(lambda: threading.Thread(target=monitor_active_trades).start())
     schedule.every(30).seconds.do(lambda: threading.Thread(target=fast_track_watchlist).start())
+    
+    # ─ TAMBAH INI: BOS Monitor setiap 15 saat ────────────────
+    schedule.every(15).seconds.do(lambda: threading.Thread(target=monitor_bos_breaks).start())
+    # ── TAMAT BOS MONITOR ─────────────────────────────────────
+    
     while True:
         schedule.run_pending()
         time.sleep(1)
