@@ -527,8 +527,23 @@ def analyze_smc_pa(sym, verbose=True):
         log(f"❌ REJECT: Score {score} < 2")
         return None
 
-    # 9. KIRA SL & TP
-    sl = min(curr['l'], swing_low) * 0.995
+    # 9. KIRA SL & TP — MAJOR SWING LOW + MINIMUM 5%
+    # Guna major swing low dari 200 candle (bukan fractal kecil)
+    major_swing_low = min(c['l'] for c in candles[-200:])
+    sl_candidate = major_swing_low * 0.995  # 0.5% buffer bawah major swing low
+
+    # Safety net: Minimum SL 5% dari entry
+    min_sl_distance = entry * 0.05  # 5% minimum
+    sl_from_entry = entry - min_sl_distance
+
+    # Guna yang LEBIH RENDAH antara major swing low atau minimum 5%
+    sl = min(sl_candidate, sl_from_entry)
+
+    # Fallback jika SL masih terlalu dekat
+    if (entry - sl) < (entry * 0.05):
+        sl = entry * 0.95  # Force 5% SL
+        log(f"⚠️ SL adjusted to minimum 5%: ${fmt(sl)}")
+
     tp1 = swing_high
     tp2 = swing_low + (rng * 1.618)
     tp3 = swing_low + (rng * 2.618)
@@ -537,6 +552,8 @@ def analyze_smc_pa(sym, verbose=True):
     if risk <= 0:
         log("❌ REJECT: Risk invalid")
         return None
+
+    log(f"📊 Major Swing Low: ${fmt(major_swing_low)} | Final SL: ${fmt(sl)} ({((entry-sl)/entry*100):.1f}% risk)")
 
     rr1 = (tp1 - price) / risk
     rr2 = (tp2 - price) / risk
