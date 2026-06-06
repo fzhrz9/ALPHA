@@ -661,6 +661,11 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
         price_gap = abs(current_price - entry) / entry * 100
         if price_gap > 2.0:
             print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}%")
+            # ── TAMBAH KE PULLBACK WATCHLIST ──────────────────
+            # Jika setup cukup kuat (score >= 3), simpan untuk monitor pullback
+            if smc_data["score"] >= 3 and sym not in PULLBACK_WATCHLIST:
+                add_pullback_watchlist(sym, smc_data)
+            # ── TAMAT TAMBAH ──────────────────────────────────
             return False
 
     sl_pct = (entry - sl) / entry * 100
@@ -729,6 +734,22 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
 IS_SCANNING = True
 WATCHLIST = {}  # Simpan token yang "hampir lulus"
 WATCHLIST_TIMEOUT = 600  # 10 minit timeout
+
+# ── PULLBACK WATCHLIST (V-SHAPE RECOVERY) ─────────────────────
+PULLBACK_WATCHLIST = {}  # Format: {"SYM": {"entry": x, "fib_500": y, "fib_786": z, "added": time}}
+PULLBACK_TIMEOUT = 1200  # 20 minit timeout
+
+def add_pullback_watchlist(sym, smc_data):
+    """Simpan coin ke Pullback Watchlist bila harga dah pump jauh."""
+    PULLBACK_WATCHLIST[sym] = {
+        "entry": smc_data["entry"],
+        "fib_500": smc_data.get("tp1", smc_data["entry"] * 1.05), # Fallback jika tiada fib
+        "fib_786": smc_data["sl"], # Guna SL sebagai zon extreme
+        "added": time.time(),
+        "setup": smc_data["setup"]
+    }
+    print(f"[{sym}] 📌 MASUK PULLBACK WATCHLIST: Tunggu harga balik ke zon {fmt(smc_data['sl'])} - {fmt(smc_data['entry'])}")
+# ── TAMAT PULLBACK WATCHLIST ──────────────────────────────────
 
 # ── BOS (Break of Structure) WATCHLIST ────────────────────────
 BOS_WATCHLIST = {}  # Format: {"SYMBOL": {"level": price, "type": "HL"/"LH", "added": time}}
@@ -1162,60 +1183,84 @@ def generate_journal():
 # =================================================================
 # 10. SCHEDULER & MAIN
 # =================================================================
-def fast_track_watchlist():
-    """Micro-Scan setiap 30 saat untuk token dalam Watchlist."""
-    if not IS_SCANNING or not WATCHLIST:
+def monitor_pullback_watchlist():
+    """
+    Monitor Pullback Watchlist setiap 30 saat guna M5.
+    Filter: Anti-Bleed (Candle Ratio), Volume Dry, Trigger M5.
+    """
+    if not IS_SCANNING or not PULLBACK_WATCHLIST:
         return
 
-    print(f"\n[FAST TRACK] Checking {len(WATCHLIST)} tokens...")
+    print(f"\n[PULLBACK MONITOR] Checking {len(PULLBACK_WATCHLIST)} coins...")
     symbols_to_remove = []
 
-    for sym, added_time in list(WATCHLIST.items()):
-        if time.time() - added_time > WATCHLIST_TIMEOUT:
-            symbols_to_remove.append(sym)
-            continue
-
+    for sym, data in list(PULLBACK_WATCHLIST.items()):
         try:
-            candles = get_gateio_klines(sym, "15m", 50)
-            if len(candles) < 20:
+            # 1. Timeout Check (20 minit)
+            if time.time() - data["added"] > PULLBACK_TIMEOUT:
+                symbols_to_remove.append(sym)
                 continue
 
-            highs = [c['h'] for c in candles[-50:]]
-            lows = [c['l'] for c in candles[-50:]]
-            range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+            # Ambil data M5 (50 candle = 4 jam lepas)
+            candles_m5 = get_gateio_klines(sym, "5m", 50)
+            if len(candles_m5) < 20: continue
 
-            curr = candles[-1]
-            prev = candles[-2]
+            current_price = candles_m5[-1]['c']
+            
+            # 2. LOCATION CHECK: Adakah harga dah masuk zon Discount (antara Entry dan SL)?
+            # Kita guna Entry sebagai Fib 0.5 (approx) dan SL sebagai Fib 0.786
+            if current_price > data["entry"] or current_price < data["fib_786"]:
+                continue # Harga belum pullback atau dah jatuh terlalu dalam (falling knife)
+
+            # 3. ANTI-BLEED FILTER (Candle Ratio): 10 candle M5 terakhir
+            recent_10 = candles_m5[-10:]
+            red_candles = sum(1 for c in recent_10 if c['c'] < c['o'])
+            if red_candles >= 8:
+                print(f"[{sym}]  SLOW DUMP DETECTED ({red_candles}/10 merah). Buang dari watchlist.")
+                symbols_to_remove.append(sym)
+                continue
+
+            # 4. VOLUME DRY CHECK: Volume mesti rendah semasa pullback
+            avg_vol_m5 = sum(c['v'] for c in candles_m5[-20:-1]) / 19
+            curr_vol_m5 = candles_m5[-1]['v']
+            if curr_vol_m5 > (avg_vol_m5 * 1.5):
+                continue # Volume masih tinggi (seller aktif), belum safe
+
+            # 5. TRIGGER CHECK: Pinbar atau Engulfing di M5
+            curr = candles_m5[-1]
+            prev = candles_m5[-2]
             body = abs(curr['c'] - curr['o'])
             lower_wick = min(curr['o'], curr['c']) - curr['l']
+            
             is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
             is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and
                             curr['c'] > prev['o'] and curr['o'] < prev['c'])
 
-            if range_pct <= 5 and (is_pinbar or is_engulfing):
-                avg_vol = sum(c['v'] for c in candles[-20:-1]) / 19
-                vol_spike = curr['v'] / avg_vol if avg_vol > 0 else 0
-
-                smc_m15 = {
-                    "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else "⚡ ENGULFING MOMENTUM",
-                    "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
-                    "tp1": max(highs[-50:]) * 1.02,
-                    "tp2": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 3,
-                    "tp3": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 5,
-                    "rr1": 0, "rr2": 0, "score": 3,
-                    "fib_zone": "N/A", "timeframe": "M15",
-                    "vol_spike": vol_spike, "range_pct": range_pct
+            if is_pinbar or is_engulfing:
+                # ✅ LULUS SEMUA FILTER! Hantar Signal Pullback
+                setup_name = "🔄 PULLBACK RECOVERY (M5)"
+                smc_pullback = {
+                    "setup": setup_name,
+                    "entry": curr['c'],
+                    "sl": data["fib_786"] * 0.99, # SL bawah zon extreme
+                    "tp1": data["entry"], # TP1 balik ke harga asal pump
+                    "tp2": data["entry"] * 1.05,
+                    "tp3": data["entry"] * 1.10,
+                    "rr1": 2.0, "rr2": 4.0, "score": 4, # High score sebab confirm pullback
+                    "fib_zone": "N/A", "timeframe": "M5"
                 }
-
-                if send_signal(sym, smc_m15, 0, btc_chg=0.0):
+                
+                if send_signal(sym, smc_pullback, 0, btc_chg=0.0):
                     symbols_to_remove.append(sym)
-                    print(f"[{sym}] 🚀 TRIGGERED FROM WATCHLIST!")
-        except Exception as e:
-            print(f"[FAST TRACK ERROR] {sym}: {e}")
+                    print(f"[{sym}] 🚀 PULLBACK TRIGGERED! Signal dihantar.")
 
+        except Exception as e:
+            print(f"[PULLBACK ERROR] {sym}: {e}")
+
+    # Cleanup
     for sym in symbols_to_remove:
-        if sym in WATCHLIST:
-            del WATCHLIST[sym]
+        if sym in PULLBACK_WATCHLIST: del PULLBACK_WATCHLIST[sym]
+
 
 def monitor_bos_breaks():
     """Monitor BOS Watchlist setiap 15 saat. Instant signal bila break."""
@@ -1266,15 +1311,17 @@ def monitor_bos_breaks():
 def run_scheduler():
     schedule.every(5).minutes.do(lambda: threading.Thread(target=scan_once).start())
     schedule.every(5).minutes.do(lambda: threading.Thread(target=monitor_active_trades).start())
+    
+    # Fast Track Micro-Scan setiap 30 saat
     schedule.every(30).seconds.do(lambda: threading.Thread(target=fast_track_watchlist).start())
     
-    # ─ TAMBAH INI: BOS Monitor setiap 15 saat ────────────────
-    schedule.every(15).seconds.do(lambda: threading.Thread(target=monitor_bos_breaks).start())
-    # ── TAMAT BOS MONITOR ─────────────────────────────────────
+    # ── TAMBAH INI: Pullback Monitor setiap 30 saat ───────────
+    schedule.every(30).seconds.do(lambda: threading.Thread(target=monitor_pullback_watchlist).start())
+    # ─ TAMAT PULLBACK MONITOR ────────────────────────────────
     
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(1) # Tukar dari 30 ke 1 saat untuk ketepatan scheduler)
 
 class RenderHandler(BaseHTTPRequestHandler):
     def do_GET(self):
