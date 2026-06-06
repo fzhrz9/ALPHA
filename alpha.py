@@ -370,27 +370,6 @@ def analyze_smc_pa(sym, verbose=True):
     else:
         log(f"⚠️ STRUCTURE: {structure} (Proceed with caution)")
 
-    # ── DETECT PENDING BOS (Untuk Real-Time Signal) ───────────
-    shs_list = [s for s in swings if s['type'] == 'SH']
-    sls_list = [s for s in swings if s['type'] == 'SL']
-    
-    if len(sls_list) >= 2:
-        last_hl = sls_list[-1]['price']
-        distance = abs(price - last_hl) / last_hl * 100
-        if distance <= 2.0 and price > last_hl:
-            if sym not in BOS_WATCHLIST:
-                BOS_WATCHLIST[sym] = {"level": last_hl, "type": "HL", "added": time.time()}
-                log(f"📌 PENDING BOS: HL ${fmt(last_hl)} (jarak {distance:.1f}%)")
-                
-    if len(shs_list) >= 2:
-        last_lh = shs_list[-1]['price']
-        distance = abs(price - last_lh) / last_lh * 100
-        if distance <= 2.0 and price < last_lh:
-            if sym not in BOS_WATCHLIST:
-                BOS_WATCHLIST[sym] = {"level": last_lh, "type": "LH", "added": time.time()}
-                log(f"📌 PENDING BOS: LH ${fmt(last_lh)} (jarak {distance:.1f}%)")
-    # ── TAMAT DETECT PENDING BOS ──────────────────────────────
-
     # Ambil swing high/low dari fractal (bukan max/min)
     shs = [s for s in swings if s['type'] == 'SH']
     sls = [s for s in swings if s['type'] == 'SL']
@@ -563,6 +542,27 @@ def analyze_smc_pa(sym, verbose=True):
     rr2 = (tp2 - price) / risk
 
     log(f" SETUP COMPLETE: {setup_name} | Score: {score}")
+    # ── DETECT PENDING BOS (Untuk Real-Time Signal) ───────────
+    # Letak di sini sebab variable 'price' dah wujud
+    shs_list = [s for s in swings if s['type'] == 'SH']
+    sls_list = [s for s in swings if s['type'] == 'SL']
+    
+    if len(sls_list) >= 2:
+        last_hl = sls_list[-1]['price']
+        distance = abs(price - last_hl) / last_hl * 100
+        if distance <= 2.0 and price > last_hl:
+            if sym not in BOS_WATCHLIST:
+                BOS_WATCHLIST[sym] = {"level": last_hl, "type": "HL", "added": time.time()}
+                log(f"📌 PENDING BOS: HL ${fmt(last_hl)} (jarak {distance:.1f}%)")
+                
+    if len(shs_list) >= 2:
+        last_lh = shs_list[-1]['price']
+        distance = abs(price - last_lh) / last_lh * 100
+        if distance <= 2.0 and price < last_lh:
+            if sym not in BOS_WATCHLIST:
+                BOS_WATCHLIST[sym] = {"level": last_lh, "type": "LH", "added": time.time()}
+                log(f"📌 PENDING BOS: LH ${fmt(last_lh)} (jarak {distance:.1f}%)")
+    # ── TAMAT DETECT PENDING BOS ──────────────────────────────
 
     return {
         "setup": setup_name, "entry": price, "sl": sl,
