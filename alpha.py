@@ -24,7 +24,7 @@ bot = TeleBot(TELEGRAM_BOT_TOKEN)
 START_TIME = time.time()
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SCAN_MODE = os.environ.get("SCAN_MODE", "pullback").lower()
+SCAN_MODE = os.environ.get("SCAN_MODE", "both").lower()
 
 def alert_admin(text):
     try:
@@ -42,10 +42,10 @@ PRESETS = {
 }
 
 DEFAULT_CONFIG = {
-    "min_vol_24h": 1_000_000,
-    "score_pass": 3,
+    "min_vol_24h": 500_000,
+    "score_pass": 2,
     "cooldown_hours": 24,
-    "active_preset": "standard"
+    "active_preset": "soft"
 }
 
 _config_cache = {}
