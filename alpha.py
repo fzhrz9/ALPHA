@@ -1203,6 +1203,40 @@ def cmd_help(msg):
 # =================================================================
 # 9. JOURNAL
 # =================================================================
+def generate_journal():
+    trades = get_signals_since(7)
+    if not trades:
+        return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
+
+    total = len(trades)
+    tp1_n = sum(1 for t in trades if t.get("tp1_hit"))
+    tp2_n = sum(1 for t in trades if t.get("tp2_hit"))
+    tp3_n = sum(1 for t in trades if t.get("tp3_hit"))
+    sl_n = sum(1 for t in trades if t.get("sl_hit"))
+    open_n = sum(1 for t in trades if not t.get("closed"))
+
+    setups = {}
+    for t in trades:
+        s = t.get("setup", "Unknown")
+        setups[s] = setups.get(s, 0) + 1
+    setup_str = " | ".join(f"{k}: {v}" for k, v in sorted(setups.items(), key=lambda x: -x[1]))
+
+    wr = tp1_n / total * 100 if total else 0
+
+    return (
+        f"📓 <b>ALPHA JOURNAL (7D)</b>\n\n"
+        f"├ Total Signal : <code>{total}</code>\n"
+        f"├ TP1 Hit      : <code>{tp1_n} ({wr:.0f}%)</code>\n"
+        f"├ TP2 Hit      : <code>{tp2_n}</code>\n"
+        f"├ TP3 Moonshot : <code>{tp3_n}</code>\n"
+        f"├ SL Hit       : <code>{sl_n}</code>\n"
+        f"└ Masih Buka   : <code>{open_n}</code>\n\n"
+        f"<b>🧠 Setup Breakdown:</b>\n<code>{setup_str}</code>"
+    )
+
+# =================================================================
+# 10. SCHEDULER & MAIN
+# =================================================================
 def fast_track_watchlist():
     """Micro-Scan setiap 30 saat untuk token dalam Watchlist."""
     if not IS_SCANNING or not WATCHLIST: return
@@ -1254,43 +1288,6 @@ def fast_track_watchlist():
     for sym in symbols_to_remove:
         if sym in WATCHLIST: del WATCHLIST[sym]
 
-
-def monitor_pullback_watchlist():
-
-def generate_journal():
-    trades = get_signals_since(7)
-    if not trades:
-        return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
-
-    total = len(trades)
-    tp1_n = sum(1 for t in trades if t.get("tp1_hit"))
-    tp2_n = sum(1 for t in trades if t.get("tp2_hit"))
-    tp3_n = sum(1 for t in trades if t.get("tp3_hit"))
-    sl_n = sum(1 for t in trades if t.get("sl_hit"))
-    open_n = sum(1 for t in trades if not t.get("closed"))
-
-    setups = {}
-    for t in trades:
-        s = t.get("setup", "Unknown")
-        setups[s] = setups.get(s, 0) + 1
-    setup_str = " | ".join(f"{k}: {v}" for k, v in sorted(setups.items(), key=lambda x: -x[1]))
-
-    wr = tp1_n / total * 100 if total else 0
-
-    return (
-        f"📓 <b>ALPHA JOURNAL (7D)</b>\n\n"
-        f"├ Total Signal : <code>{total}</code>\n"
-        f"├ TP1 Hit      : <code>{tp1_n} ({wr:.0f}%)</code>\n"
-        f"├ TP2 Hit      : <code>{tp2_n}</code>\n"
-        f"├ TP3 Moonshot : <code>{tp3_n}</code>\n"
-        f"├ SL Hit       : <code>{sl_n}</code>\n"
-        f"└ Masih Buka   : <code>{open_n}</code>\n\n"
-        f"<b>🧠 Setup Breakdown:</b>\n<code>{setup_str}</code>"
-    )
-
-# =================================================================
-# 10. SCHEDULER & MAIN
-# =================================================================
 def monitor_pullback_watchlist():
     """
     Monitor Pullback Watchlist setiap 30 saat guna M5.
