@@ -42,7 +42,7 @@ PRESETS = {
 }
 
 DEFAULT_CONFIG = {
-    "min_vol_24h": 500_000,
+    "min_vol_24h": 100_000,
     "score_pass": 2,
     "cooldown_hours": 24,
     "active_preset": "soft"
