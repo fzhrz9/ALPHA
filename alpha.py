@@ -629,18 +629,52 @@ def analyze_early_momentum(sym, verbose=True):
     tp2 = entry + (entry - sl) * 3
     tp3 = entry + (entry - sl) * 5
 
-    risk = entry - sl
-    if risk <= 0:
-        return None
+    # ── HTF BIAS (H4 Trend Check) ─────────────────────────────
+    h4_bias = "neutral"
+    try:
+        # Ambil 50 candle H4 untuk kira EMA20
+        candles_h4 = get_gateio_klines(sym, "4h", 50)
+        if len(candles_h4) >= 20:
+            h4_closes = [c['c'] for c in candles_h4[-20:]]
+            
+            # Kira EMA20 H4 (Formula Sebenar)
+            multiplier = 2 / 21
+            h4_ema = sum(h4_closes[:20]) / 20
+            for close in h4_closes[20:]:
+                h4_ema = (close - h4_ema) * multiplier + h4_ema
+            
+            h4_current = candles_h4[-1]['c']
+            
+            if h4_current > h4_ema:
+                h4_bias = "uptrend"    # WITH-TREND (Safe)
+            else:
+                h4_bias = "downtrend"  # COUNTER-TREND (Risky)
+    except Exception:
+        pass
 
-    log(f"⚡ MOMENTUM SETUP: {setup_name}")
+    # LARAS TARGET BERDASARKAN H4 BIAS
+    if h4_bias == "downtrend":
+        # Counter-trend: Ketatkan SL dan Potong TP3
+        sl = min(lows[-20:]) * 0.995  # SL lebih ketat (0.5% instead of 1%)
+        tp3 = tp2                     # Potong Moonshot, exit di TP2
+        setup_name = "⚡ COUNTER-TREND (Risky)"
+        log(f"⚠️ HTF BIAS: H4 Downtrend. SL tightened, TP3 capped.")
+    else:
+        log(f"✅ HTF BIAS: H4 Uptrend/Neutral. Full targets.")
+    # ── TAMAT HTF BIAS ────────────────────────────────────────
+
+    risk = entry - sl
+    if risk <= 0: return None
+
+    log(f"⚡ MOMENTUM SETUP: {setup_name} | H4 Bias: {h4_bias}")
 
     return {
-        "setup": setup_name, "entry": entry, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "rr1": 0, "rr2": 0, "score": 3,
-        "fib_zone": "N/A", "timeframe": "M15",
-        "vol_spike": vol_spike, "range_pct": range_pct
+         "setup": setup_name, "entry": entry, "sl": sl,
+         "tp1": tp1, "tp2": tp2, "tp3": tp3,
+         "rr1": 0, "rr2": 0, "score": 3,
+         "fib_zone": "N/A", "timeframe": "M15",
+         "vol_spike": vol_spike, "range_pct": range_pct,
+         "h4_bias": h4_bias
     }
 
 # =================================================================
