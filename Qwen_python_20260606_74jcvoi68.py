@@ -734,51 +734,80 @@ def scan_once():
             if t in momentum_candidates:
                 if SCAN_MODE == "both" and is_in_cooldown(sym):
                     continue
+                
+                # FIX 2: TREND ALIGNMENT (H1 Filter) - Jangan ambil M15 long kalau H1 bearish
+                candles_h1 = get_gateio_klines(sym, "1h", 50)
+                if len(candles_h1) >= 20:
+                    h1_closes = [c['c'] for c in candles_h1[-20:]]
+                    h1_ema20 = sum(h1_closes) / 20 # Simple EMA approximation for speed
+                    if candles_h1[-1]['c'] < h1_ema20:
+                        continue # Skip, H1 downtrend
 
+                # Ambil data M15
                 candles_m15 = get_gateio_klines(sym, "15m", 100)
-                if len(candles_m15) < 50:
-                    continue
+                if len(candles_m15) < 50: continue
+                
+                curr = candles_m15[-1]
+                
+                # FIX 1: UNCLOSED CANDLE ILLUSION - Tunggu candle close atau 90% masa
+                current_time = time.time()
+                if (current_time - curr['t']) < (15 * 60 * 0.90):
+                    continue # Skip, candle belum close
 
+                # Check 1: Volume Anomaly
                 avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
-                curr_vol = candles_m15[-1]['v']
-
+                curr_vol = curr['v']
+                 
                 if curr_vol >= (avg_vol * 3):
                     if sym not in WATCHLIST:
                         WATCHLIST[sym] = time.time()
-                        print(f"[{sym}]  MASUK WATCHLIST: Volume Anomaly ({curr_vol/avg_vol:.1f}x)")
-
+                        print(f"[{sym}] 📌 MASUK WATCHLIST: Volume Anomaly ({curr_vol/avg_vol:.1f}x)")
+                    
                     highs = [c['h'] for c in candles_m15[-50:]]
                     lows = [c['l'] for c in candles_m15[-50:]]
                     range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+                    
+                    # FIX 3: CLOSE LOCATION - Close mesti di atas 75% dari range accumulation
+                    range_high = max(highs)
+                    range_low = min(lows)
+                    total_range = range_high - range_low
+                    if curr['c'] < (range_low + (total_range * 0.75)):
+                        if sym in WATCHLIST: del WATCHLIST[sym]
+                        continue # Weak close, skip
 
-                    curr = candles_m15[-1]
+                    # FIX 4: MICRO BOS - Mesti break local lower high terdekat
+                    recent_highs = [c['h'] for c in candles_m15[-20:-1]]
+                    local_lh = max(recent_highs) if recent_highs else range_high
+                    if curr['c'] <= local_lh:
+                        if sym in WATCHLIST: del WATCHLIST[sym]
+                        continue # Belum ada BOS, skip
+
+                    # Price Action Check
                     prev = candles_m15[-2]
                     body = abs(curr['c'] - curr['o'])
                     lower_wick = min(curr['o'], curr['c']) - curr['l']
                     is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
                     is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and
                                     curr['c'] > prev['o'] and curr['o'] < prev['c'])
-
+                    
+                    # Jika SEMUA syarat Institutional cukup, terus tembak!
                     if range_pct <= 5 and (is_pinbar or is_engulfing):
                         smc_m15 = {
-                            "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else "⚡ ENGULFING MOMENTUM",
-                            "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
-                            "tp1": max(highs[-50:]) * 1.02,
-                            "tp2": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 3,
-                            "tp3": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 5,
-                            "rr1": 0, "rr2": 0, "score": 3,
-                            "fib_zone": "N/A", "timeframe": "M15",
-                            "vol_spike": curr_vol / avg_vol, "range_pct": range_pct
+                             "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else " ENGULFING MOMENTUM",
+                             "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
+                             "tp1": max(highs[-50:]) * 1.02,
+                             "tp2": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 3,
+                             "tp3": curr['c'] + (curr['c'] - min(lows[-20:]) * 0.99) * 5,
+                             "rr1": 0, "rr2": 0, "score": 3,
+                             "fib_zone": "N/A", "timeframe": "M15",
+                             "vol_spike": curr_vol / avg_vol, "range_pct": range_pct
                         }
                         if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
                             passed += 1
-                            if sym in WATCHLIST:
-                                del WATCHLIST[sym]
+                            if sym in WATCHLIST: del WATCHLIST[sym]
                             time.sleep(2)
                 else:
-                    if sym in WATCHLIST:
-                        del WATCHLIST[sym]
-
+                     if sym in WATCHLIST: del WATCHLIST[sym]
     print(f"\n📊 SCAN SELESAI | {passed} signal dihantar")
     print(f"{'='*60}\n")
 
