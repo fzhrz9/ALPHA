@@ -693,13 +693,33 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     current_price = get_gateio_price(sym)
     if current_price > 0:
         price_gap = abs(current_price - entry) / entry * 100
-        if price_gap > 2.0:
-            print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}%")
-            # ── TAMBAH KE PULLBACK WATCHLIST ──────────────────
-            # Jika setup cukup kuat (score >= 3), simpan untuk monitor pullback
-            if smc_data["score"] >= 3 and sym not in PULLBACK_WATCHLIST:
+        
+        # ── DYNAMIC THRESHOLD (ATR BASED) ─────────────────────
+        # Ambil ATR dari data H1 (14 candle) untuk kira volatiliti coin
+        candles_atr = get_gateio_klines(sym, "1h", 20)
+        threshold = 2.0 # Default minimum threshold
+        if len(candles_atr) >= 15:
+            trs = []
+            for i in range(-14, 0):
+                c = candles_atr[i]
+                prev = candles_atr[i-1]
+                tr = max(c['h'] - c['l'], abs(c['h'] - prev['c']), abs(c['l'] - prev['c']))
+                trs.append(tr)
+            atr = sum(trs) / len(trs)
+            # Threshold: 2x ATR percentage (Minimum 2.0%)
+            atr_pct = (atr / entry) * 100
+            threshold = max(2.0, atr_pct * 2.0) 
+        # ── TAMAT DYNAMIC THRESHOLD ───────────────────────────
+
+        if price_gap > threshold:
+            print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}% (Threshold: {threshold:.1f}%)")
+            
+            # ─ TAMBAH KE PULLBACK WATCHLIST ─────────────────
+            # Jika setup cukup kuat (score >= 2), simpan untuk monitor pullback
+            if smc_data["score"] >= 2 and sym not in PULLBACK_WATCHLIST:
                 add_pullback_watchlist(sym, smc_data)
             # ── TAMAT TAMBAH ──────────────────────────────────
+            
             return False
 
     sl_pct = (entry - sl) / entry * 100
