@@ -581,7 +581,7 @@ def analyze_early_momentum(sym, verbose=True):
 # =================================================================
 def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     cfg = get_config()
-    if smc_data["score"] < cfg["score_pass"]:
+    if smc_data["score"] < 1:  # <--- DITUKAR KE 1 (Hampir semua setup akan lulus)
         return False
     entry = smc_data["entry"]
     sl = smc_data["sl"]
