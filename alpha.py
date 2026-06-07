@@ -1,10 +1,11 @@
 """
-ALPHA — Gate.io Dual Engine Sniper (BALANCED PREMIUM UI)
+ALPHA — Gate.io Dual Engine Sniper (BALANCED PREMIUM UI) - PRO FIX
 Engine 1: Pullback SMC (H1 + H4) — Fractal Swing + EMA + VPA Impulse
 Engine 2: Early Momentum (M15) — Volume Anomaly + Accumulation
 Mode: /mode pullback | momentum | both
 """
 import os, time, json, requests, threading, traceback, schedule
+import concurrent.futures
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
@@ -28,8 +29,8 @@ SCAN_MODE = os.environ.get("SCAN_MODE", "both").lower()
 def alert_admin(text):
     try:
         bot.send_message(ADMIN_ID, f" <b>ALPHA SYSTEM</b>\n<pre>{str(text)[:800]}</pre>", parse_mode="HTML")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[ADMIN ALERT ERROR] {e}")
 
 # =================================================================
 # 2. PRESETS & SUPABASE HELPERS
@@ -217,7 +218,8 @@ def get_gateio_klines(sym, interval="1h", limit=200):
                 'l': float(k[4]), 'c': float(k[2]), 'v': float(k[1])
             })
         return candles
-    except Exception:
+    except Exception as e:
+        # Menapis bunyi log sekiranya API rate limit dicapai
         return []
 
 # =================================================================
@@ -298,7 +300,6 @@ def check_market_structure(swings):
 # 5. PREMIUM UI HELPERS (BALANCED FORMAT)
 # =================================================================
 def calculate_grade(score, max_score=4):
-    """Kira grade berdasarkan score - mapping ke mockup"""
     percentage = int((score / max_score) * 100)
     if percentage >= 90:
         return "S", percentage
@@ -312,7 +313,6 @@ def calculate_grade(score, max_score=4):
         return "D", percentage
 
 def build_htf_context(smc_data):
-    """Build HTF context dalam 1 baris - mapping ke mockup"""
     tf_map = {
         'uptrend': '🟢 Up',
         'downtrend': '🔴 Down',
@@ -325,7 +325,6 @@ def build_htf_context(smc_data):
     h1_struct = smc_data.get('structure', 'unknown')
     timeframe = smc_data.get('timeframe', 'H1')
     
-    # Untuk M15 momentum, guna h4_bias
     if timeframe == 'M15':
         h4_bias = smc_data.get('h4_bias', 'neutral')
         if h4_bias == 'uptrend':
@@ -339,7 +338,6 @@ def build_htf_context(smc_data):
     
     h1_display = tf_map.get(h1_struct, '⚪ ?')
     
-    # M15 display
     if timeframe == 'M15':
         m15_display = '🔴 Break'
     else:
@@ -348,11 +346,9 @@ def build_htf_context(smc_data):
     return f"H4 {h4_display} │ H1 {h1_display} │ M15 {m15_display}"
 
 def build_confluence(smc_data):
-    """Build confluence bullet points - mapping ke mockup"""
     lines = []
     timeframe = smc_data.get('timeframe', 'H1')
     
-    # Structure (untuk H1 pullback)
     if 'structure' in smc_data and timeframe == 'H1':
         struct = smc_data['structure']
         if struct in ['uptrend', 'uptrend_breakout']:
@@ -360,22 +356,18 @@ def build_confluence(smc_data):
         elif struct == 'sideway':
             lines.append("• Structure: Sideway")
     
-    # Fibonacci (untuk H1 pullback)
     if smc_data.get('fib_zone') != 'N/A' and timeframe == 'H1':
         lines.append("• Fibonacci: Discount Zone")
     
-    # VPA (untuk H1 pullback)
     if 'vpa_dry' in smc_data:
         if smc_data['vpa_dry']:
             lines.append("• VPA: Dry (Pullback vol <70%)")
         else:
             lines.append("• VPA: Weak")
     
-    # Volume (untuk M15 momentum)
     if 'vol_spike' in smc_data:
         lines.append(f"• Volume: {smc_data['vol_spike']:.1f}x Spike")
     
-    # Range (untuk M15 momentum)
     if 'range_pct' in smc_data:
         range_val = smc_data['range_pct']
         if range_val <= 5:
@@ -383,7 +375,6 @@ def build_confluence(smc_data):
         else:
             lines.append(f"• Accumulation: Range {range_val:.1f}%")
     
-    # Setup name
     setup = smc_data.get('setup', 'Unknown')
     if 'Pinbar' in setup:
         lines.append("• Setup: Pinbar Reversal")
@@ -400,23 +391,16 @@ def build_confluence(smc_data):
     else:
         lines.append(f"• Setup: {setup}")
     
-    # Close Location (untuk M15)
     if 'close_location' in smc_data:
         lines.append(f"• Close Location: {smc_data['close_location']:.0f}% (Strong)")
     
-    return "\n   ".join(lines[:5])  # Max 5 bullet points
+    return "\n   ".join(lines[:5])
 
-def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
-    """
-    Build balanced premium signal message.
-    Setiap elemen dipetakan dari mockup ke data sebenar.
-    """
-    # === HEADER ===
+def build_balanced_signal(sym, smc_data, vol_24h, btc_chg, extra_warning=""):
     grade, grade_pct = calculate_grade(smc_data['score'])
     timeframe = smc_data.get('timeframe', 'H1')
     setup = smc_data.get('setup', 'Unknown')
     
-    # Icon based on grade dan setup type
     if grade in ['C+', 'D']:
         header_icon = '⚠️'
     elif 'Counter' in setup or 'Risky' in setup:
@@ -428,10 +412,8 @@ def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
     else:
         header_icon = '🏴‍☠️'
     
-    # === HTF CONTEXT ===
     htf_context = build_htf_context(smc_data)
     
-    # === ENTRY DETAILS ===
     entry = smc_data['entry']
     sl = smc_data['sl']
     tp1 = smc_data['tp1']
@@ -443,16 +425,13 @@ def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
     tp2_pct = (tp2 - entry) / entry * 100
     tp3_pct = (tp3 - entry) / entry * 100
     
-    # RR calculation
     risk = entry - sl
     rr1 = (tp1 - entry) / risk if risk > 0 else 0
     rr2 = (tp2 - entry) / risk if risk > 0 else 0
     rr3 = (tp3 - entry) / risk if risk > 0 else 0
     
-    # === CONFLUENCE ===
     confluence = build_confluence(smc_data)
     
-    # === WARNING SECTION (untuk counter-trend) ===
     warning_section = ""
     if smc_data.get('h4_bias') == 'downtrend' or 'Counter' in setup:
         warning_section = f"""
@@ -461,14 +440,13 @@ def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
    • SL Tightened (-{risk_pct:.1f}% vs normal)
    • TP3 Capped (Exit at TP2)"""
     
-    # === FOOTER WARNING ===
-    footer_warning = ""
-    if grade in ['C+', 'D']:
-        footer_warning = "\n│ ⚠️  REDUCED POSITION SIZE              │"
-    elif grade == 'S':
-        footer_warning = "\n│ 💎 PREMIUM SETUP - FULL POSITION OK    │"
+    footer_warning = extra_warning
+    if not footer_warning:
+        if grade in ['C+', 'D']:
+            footer_warning = "\n│ ⚠️  REDUCED POSITION SIZE              │"
+        elif grade == 'S':
+            footer_warning = "\n│ 💎 PREMIUM SETUP - FULL POSITION OK    │"
     
-    # === BTC STATUS ===
     if btc_chg > -2:
         btc_icon = '🟢'
     elif btc_chg < -4:
@@ -476,7 +454,6 @@ def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
     else:
         btc_icon = ''
     
-    # === VOLUME STATUS ===
     vol_m = vol_24h / 1e6
     if vol_m > 1:
         vol_icon = ''
@@ -485,7 +462,6 @@ def build_balanced_signal(sym, smc_data, vol_24h, btc_chg):
     else:
         vol_icon = '🔴'
     
-    # === BUILD MESSAGE ===
     msg = f"""╭─────────────────────────────────────────╮
 │ {header_icon} {sym}/USDT — {setup}
 │ ⏱ {timeframe} | Grade: {grade} ({grade_pct}%){' ️' if grade in ['C+', 'D'] else ''}
@@ -518,7 +494,7 @@ def analyze_smc_pa(sym, verbose=True):
     log = lambda msg: print(f"[{sym}-H1] {msg}") if verbose else None
     candles = get_gateio_klines(sym, "1h", 200)
     if len(candles) < 100:
-        log("❌ REJECT: Data H1 < 100 candle")
+        # log("❌ REJECT: Data H1 < 100 candle")
         return None
 
     candles_h4 = get_gateio_klines(sym, "4h", 50)
@@ -527,7 +503,7 @@ def analyze_smc_pa(sym, verbose=True):
         h4_swings = find_fractal_swings(candles_h4, lookback=1)
         h4_structure = check_market_structure(h4_swings)
         if h4_structure == 'downtrend':
-            log("❌ REJECT: H4 structure downtrend (LH/LL)")
+            # log("❌ REJECT: H4 structure downtrend (LH/LL)")
             return None
 
     swings = find_fractal_swings(candles, lookback=2)
@@ -546,7 +522,7 @@ def analyze_smc_pa(sym, verbose=True):
             structure = 'unknown'
 
     if structure == 'downtrend':
-        log("❌ REJECT: Market structure downtrend (LH/LL)")
+        # log("❌ REJECT: Market structure downtrend (LH/LL)")
         return None
     log(f"✅ STRUCTURE: {structure}")
 
@@ -556,7 +532,6 @@ def analyze_smc_pa(sym, verbose=True):
     swing_low = sls[-1]['price'] if sls else min(c['l'] for c in candles[-200:])
     rng = swing_high - swing_low
     if rng <= 0:
-        log("❌ REJECT: Range terlalu sempit")
         return None
 
     fib_500 = swing_high - (rng * 0.500)
@@ -566,7 +541,6 @@ def analyze_smc_pa(sym, verbose=True):
 
     in_discount = fib_786 <= price <= fib_500
     if not in_discount:
-        log("❌ REJECT: Not in Discount Zone")
         return None
     log(f"✅ FIBO PASS: Price ${fmt(price)} dalam DISCOUNT ZONE")
 
@@ -575,7 +549,6 @@ def analyze_smc_pa(sym, verbose=True):
     ema50 = calculate_ema(closes, 50)
     is_uptrend = ema20 > ema50
     if not is_uptrend:
-        log("❌ REJECT: EMA20 < EMA50")
         return None
 
     impulse_vols = [c['v'] for c in candles[-20:] if c['c'] > c['o']]
@@ -680,7 +653,6 @@ def analyze_early_momentum(sym, verbose=True):
     log = lambda msg: print(f"[{sym}-M15] {msg}") if verbose else None
     candles = get_gateio_klines(sym, "15m", 100)
     if len(candles) < 50:
-        log("❌ REJECT: Data M15 < 50")
         return None
 
     avg_vol = sum(c['v'] for c in candles[-20:-1]) / 19 if len(candles) >= 20 else 1
@@ -742,7 +714,7 @@ def analyze_early_momentum(sym, verbose=True):
     }
 
 # =================================================================
-# 8. SIGNAL GENERATOR (BALANCED PREMIUM FORMAT)
+# 8. SIGNAL GENERATOR (FIXED SLIPPAGE LOGIC)
 # =================================================================
 IS_SCANNING = True
 WATCHLIST = {}
@@ -760,10 +732,15 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     timeframe = smc_data.get("timeframe", "H1")
 
     current_price = get_gateio_price(sym)
+    extra_warning = ""
+    
+    # KOD DIBAIKI: Bot TAK AKAN block signal jika lari dari entry.
+    # Sebaliknya, bot akan beri warning tambahan dalam Telegram.
     if current_price > 0:
         price_gap = abs(current_price - entry) / entry * 100
         candles_atr = get_gateio_klines(sym, "1h", 20)
         threshold = 2.0
+        
         if len(candles_atr) >= 15:
             trs = []
             for i in range(-14, 0):
@@ -775,13 +752,13 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
             threshold = max(2.0, (atr / entry) * 100 * 2.0)
         
         if price_gap > threshold:
-            print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}%")
+            print(f"[PASS] {sym}: Harga bergerak {price_gap:.1f}%. Isyarat tetap dihantar!")
+            extra_warning = f"\n│ ⚠️ PERHATIAN: HARGA LARI {price_gap:.1f}% DARI ENTRY │"
             if smc_data["score"] >= 2 and sym not in PULLBACK_WATCHLIST:
                 PULLBACK_WATCHLIST[sym] = {"entry": entry, "sl": sl, "added": time.time()}
-            return False
+            # Buang 'return False' di sini supaya isyarat berjaya masuk.
 
-    # BUILD PREMIUM MESSAGE
-    msg = build_balanced_signal(sym, smc_data, vol_24h, btc_chg)
+    msg = build_balanced_signal(sym, smc_data, vol_24h, btc_chg, extra_warning=extra_warning)
 
     markup = InlineKeyboardMarkup()
     markup.row(
@@ -808,11 +785,74 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
         return False
 
 # =================================================================
-# 9. SCANNER & MONITORS
+# 9. SCANNER & MONITORS (MULTI-THREADING ADDED)
 # =================================================================
+def process_coin(t, btc_chg, cfg, momentum_candidates):
+    sym = t["symbol"]
+    current_price = t.get("last_price", 0)
+    
+    if is_blacklisted_symbol(sym)[0]: return
+    if is_in_cooldown(sym) and not check_cooldown_override(sym, current_price): return
+    if sym in get_active_trades(): return
+
+    print(f"[{sym}] ANALYZING...")
+
+    if SCAN_MODE in ["pullback", "both"]:
+        smc = analyze_smc_pa(sym, verbose=True)
+        if smc and smc["score"] >= cfg["score_pass"]:
+            send_signal(sym, smc, t["volume_24h"], btc_chg=btc_chg)
+
+    if SCAN_MODE in ["momentum", "both"] and t in momentum_candidates:
+        if SCAN_MODE == "both" and is_in_cooldown(sym): return
+        
+        candles_h1 = get_gateio_klines(sym, "1h", 50)
+        if len(candles_h1) >= 20:
+            h1_ema20 = calculate_ema([c['c'] for c in candles_h1[-20:]], 20)
+            if candles_h1[-1]['c'] < h1_ema20 * 0.95: return
+
+        candles_m15 = get_gateio_klines(sym, "15m", 100)
+        if len(candles_m15) < 50: return
+        curr = candles_m15[-1]
+        
+        avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
+        curr_vol = curr['v']
+        
+        if curr_vol >= (avg_vol * 2.5):
+            if sym not in WATCHLIST: WATCHLIST[sym] = time.time()
+            
+            highs = [c['h'] for c in candles_m15[-50:]]
+            lows = [c['l'] for c in candles_m15[-50:]]
+            range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+            
+            range_high = max(highs)
+            range_low = min(lows)
+            total_range = range_high - range_low
+            if curr['c'] < (range_low + (total_range * 0.60)):
+                WATCHLIST.pop(sym, None)
+                return
+
+            recent_highs = [c['h'] for c in candles_m15[-20:-1]]
+            local_lh = max(recent_highs) if recent_highs else range_high
+            if curr['c'] <= local_lh and curr_vol/avg_vol < 4.0:
+                WATCHLIST.pop(sym, None)
+                return
+
+            prev = candles_m15[-2]
+            body = abs(curr['c'] - curr['o'])
+            lower_wick = min(curr['o'], curr['c']) - curr['l']
+            is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
+            is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and curr['c'] > prev['o'] and curr['o'] < prev['c'])
+            
+            if range_pct <= 8 and (is_pinbar or is_engulfing):
+                smc_m15 = analyze_early_momentum(sym, verbose=False)
+                if smc_m15:
+                    if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
+                        WATCHLIST.pop(sym, None)
+        else:
+            WATCHLIST.pop(sym, None)
+
 def scan_once():
-    if not IS_SCANNING:
-        return
+    if not IS_SCANNING: return
     btc_chg = get_btc_24h_change()
     cfg = get_config()
     
@@ -824,102 +864,26 @@ def scan_once():
     candidates = [t for t in tickers if t["volume_24h"] >= cfg["min_vol_24h"]]
     momentum_candidates = sorted(candidates, key=lambda x: x["volume_24h"], reverse=True)[:100]
 
-    for t in candidates:
-        sym = t["symbol"]
-        current_price = t.get("last_price", 0)
-        if is_blacklisted_symbol(sym)[0]:
-            continue
-        if is_in_cooldown(sym) and not check_cooldown_override(sym, current_price):
-            continue
-        if sym in get_active_trades():
-            continue
-
-        print(f"\n[{sym}]  ANALYZING...")
-
-        if SCAN_MODE in ["pullback", "both"]:
-            smc = analyze_smc_pa(sym, verbose=True)
-            if smc and smc["score"] >= cfg["score_pass"]:
-                if send_signal(sym, smc, t["volume_24h"], btc_chg=btc_chg):
-                    time.sleep(2)
-
-        if SCAN_MODE in ["momentum", "both"]:
-            if t in momentum_candidates:
-                if SCAN_MODE == "both" and is_in_cooldown(sym):
-                    continue
-                
-                candles_h1 = get_gateio_klines(sym, "1h", 50)
-                if len(candles_h1) >= 20:
-                    h1_ema20 = calculate_ema([c['c'] for c in candles_h1[-20:]], 20)
-                    if candles_h1[-1]['c'] < h1_ema20 * 0.95:
-                        continue
-
-                candles_m15 = get_gateio_klines(sym, "15m", 100)
-                if len(candles_m15) < 50:
-                    continue
-                curr = candles_m15[-1]
-                
-                avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
-                curr_vol = curr['v']
-                
-                if curr_vol >= (avg_vol * 2.5):
-                    if sym not in WATCHLIST:
-                        WATCHLIST[sym] = time.time()
-                    
-                    highs = [c['h'] for c in candles_m15[-50:]]
-                    lows = [c['l'] for c in candles_m15[-50:]]
-                    range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
-                    
-                    range_high = max(highs)
-                    range_low = min(lows)
-                    total_range = range_high - range_low
-                    if curr['c'] < (range_low + (total_range * 0.60)):
-                        if sym in WATCHLIST:
-                            del WATCHLIST[sym]
-                        continue
-
-                    recent_highs = [c['h'] for c in candles_m15[-20:-1]]
-                    local_lh = max(recent_highs) if recent_highs else range_high
-                    if curr['c'] <= local_lh and curr_vol/avg_vol < 4.0:
-                        if sym in WATCHLIST:
-                            del WATCHLIST[sym]
-                        continue
-
-                    prev = candles_m15[-2]
-                    body = abs(curr['c'] - curr['o'])
-                    lower_wick = min(curr['o'], curr['c']) - curr['l']
-                    is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
-                    is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and curr['c'] > prev['o'] and curr['o'] < prev['c'])
-                    
-                    if range_pct <= 8 and (is_pinbar or is_engulfing):
-                        smc_m15 = analyze_early_momentum(sym, verbose=False)
-                        if smc_m15:
-                            if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
-                                if sym in WATCHLIST:
-                                    del WATCHLIST[sym]
-                                time.sleep(2)
-                else:
-                    if sym in WATCHLIST:
-                        del WATCHLIST[sym]
+    # KOD DIBAIKI: Menjalankan imbasan secara serentak (Multi-threading)
+    # Ini menghalang masalah 'Still Analyzing' / stuck loop berterusan
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_coin, t, btc_chg, cfg, momentum_candidates) for t in candidates]
+        concurrent.futures.wait(futures)
 
 def monitor_active_trades():
     active = get_active_trades()
-    if not active:
-        return
+    if not active: return
     for sym, trade in active.items():
         try:
             candles = get_gateio_klines(sym, "1h", 5)
-            if not candles:
-                continue
+            if not candles: continue
             cp = candles[-1]['c']
             mid = trade.get("msg_id")
             def notify(text):
                 kw = {"parse_mode": "HTML"}
-                if mid:
-                    kw["reply_to_message_id"] = mid
-                try:
-                    bot.send_message(VIP_CHANNEL_ID, text, **kw)
-                except:
-                    bot.send_message(VIP_CHANNEL_ID, text, parse_mode="HTML")
+                if mid: kw["reply_to_message_id"] = mid
+                try: bot.send_message(VIP_CHANNEL_ID, text, **kw)
+                except: bot.send_message(VIP_CHANNEL_ID, text, parse_mode="HTML")
             
             updates = {}
             if cp >= trade["tp1"] and not trade.get("tp1_hit"):
@@ -937,14 +901,12 @@ def monitor_active_trades():
                 updates["closed"] = True
                 notify(f"❌ <b>{sym} — SL HIT</b>\n💰 Tutup: <code>${fmt(cp)}</code>")
             
-            if updates:
-                update_signal(sym, updates)
+            if updates: update_signal(sym, updates)
         except Exception as e:
             print(f"[MONITOR] {sym}: {e}")
 
 def fast_track_watchlist():
-    if not IS_SCANNING or not WATCHLIST:
-        return
+    if not IS_SCANNING or not WATCHLIST: return
     symbols_to_remove = []
     for sym, added_time in list(WATCHLIST.items()):
         if time.time() - added_time > 600:
@@ -952,8 +914,7 @@ def fast_track_watchlist():
             continue
         try:
             candles = get_gateio_klines(sym, "15m", 50)
-            if len(candles) < 20:
-                continue
+            if len(candles) < 20: continue
             curr = candles[-1]
             prev = candles[-2]
             body = abs(curr['c'] - curr['o'])
@@ -964,15 +925,11 @@ def fast_track_watchlist():
                 smc = analyze_early_momentum(sym, verbose=False)
                 if smc and send_signal(sym, smc, 0, btc_chg=0.0):
                     symbols_to_remove.append(sym)
-        except:
-            pass
-    for sym in symbols_to_remove:
-        if sym in WATCHLIST:
-            del WATCHLIST[sym]
+        except: pass
+    for sym in symbols_to_remove: WATCHLIST.pop(sym, None)
 
 def monitor_pullback_watchlist():
-    if not IS_SCANNING or not PULLBACK_WATCHLIST:
-        return
+    if not IS_SCANNING or not PULLBACK_WATCHLIST: return
     symbols_to_remove = []
     for sym, data in list(PULLBACK_WATCHLIST.items()):
         try:
@@ -980,11 +937,9 @@ def monitor_pullback_watchlist():
                 symbols_to_remove.append(sym)
                 continue
             candles_m5 = get_gateio_klines(sym, "5m", 50)
-            if len(candles_m5) < 20:
-                continue
+            if len(candles_m5) < 20: continue
             current_price = candles_m5[-1]['c']
-            if current_price > data["entry"] or current_price < data["sl"]:
-                continue
+            if current_price > data["entry"] or current_price < data["sl"]: continue
             
             recent_10 = candles_m5[-10:]
             red_candles = sum(1 for c in recent_10 if c['c'] < c['o'])
@@ -1008,25 +963,21 @@ def monitor_pullback_watchlist():
                 }
                 if send_signal(sym, smc_pullback, 0, btc_chg=0.0):
                     symbols_to_remove.append(sym)
-        except:
-            pass
-    for sym in symbols_to_remove:
-        if sym in PULLBACK_WATCHLIST:
-            del PULLBACK_WATCHLIST[sym]
+        except: pass
+    for sym in symbols_to_remove: PULLBACK_WATCHLIST.pop(sym, None)
 
 # =================================================================
 # 10. TELEGRAM COMMANDS
 # =================================================================
 @bot.message_handler(commands=["start", "menu"])
 def cmd_start(msg):
-    if str(msg.chat.id) != str(ADMIN_ID):
-        return
+    if str(msg.chat.id) != str(ADMIN_ID): return
     cfg = get_config()
     active = get_active_trades()
     uptime_m = int((time.time() - START_TIME) / 60)
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
     text = (
-        f"🏴‍☠️ <b>ALPHA — Dual Engine Sniper (BALANCED PREMIUM)</b>\n"
+        f"🏴‍☠️ <b>ALPHA — Dual Engine Sniper (PRO FIX)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f" Uptime   : <code>{uptime_m}m</code>\n"
         f" Trade   : <code>{len(active)} aktif</code>\n"
@@ -1042,19 +993,16 @@ def cmd_start(msg):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("tune:"))
 def cb_tune(call):
-    if str(call.message.chat.id) != str(ADMIN_ID):
-        return
+    if str(call.message.chat.id) != str(ADMIN_ID): return
     bot.answer_callback_query(call.id)
     preset = call.data.split(":")[1]
     ok, lbl = apply_preset(preset)
-    if ok:
-        bot.send_message(call.message.chat.id, f"✅ Preset ditukar ke: <b>{lbl}</b>", parse_mode="HTML")
+    if ok: bot.send_message(call.message.chat.id, f"✅ Preset ditukar ke: <b>{lbl}</b>", parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("mode:"))
 def cb_mode(call):
     global SCAN_MODE
-    if str(call.message.chat.id) != str(ADMIN_ID):
-        return
+    if str(call.message.chat.id) != str(ADMIN_ID): return
     bot.answer_callback_query(call.id)
     new_mode = call.data.split(":")[1]
     if new_mode in ["pullback", "momentum", "both"]:
@@ -1064,8 +1012,7 @@ def cb_mode(call):
 @bot.callback_query_handler(func=lambda c: c.data in ["scan_on", "scan_off", "journal"])
 def cb_actions(call):
     global IS_SCANNING
-    if str(call.message.chat.id) != str(ADMIN_ID):
-        return
+    if str(call.message.chat.id) != str(ADMIN_ID): return
     bot.answer_callback_query(call.id)
     if call.data == "scan_on":
         IS_SCANNING = True
@@ -1076,10 +1023,8 @@ def cb_actions(call):
         bot.send_message(call.message.chat.id, "⏸ Scan BERHENTI.")
     elif call.data == "journal":
         trades = get_signals_since(7)
-        if not trades:
-            bot.send_message(call.message.chat.id, "Tiada data 7 hari.")
-        else:
-            bot.send_message(call.message.chat.id, f"Total: {len(trades)} | TP1: {sum(1 for t in trades if t.get('tp1_hit'))}", parse_mode="HTML")
+        if not trades: bot.send_message(call.message.chat.id, "Tiada data 7 hari.")
+        else: bot.send_message(call.message.chat.id, f"Total: {len(trades)} | TP1: {sum(1 for t in trades if t.get('tp1_hit'))}", parse_mode="HTML")
 
 # =================================================================
 # 11. SCHEDULER & MAIN
@@ -1098,8 +1043,7 @@ class RenderHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ALPHA BALANCED PREMIUM ACTIVE")
-    def log_message(self, *args):
-        pass
+    def log_message(self, *args): pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
