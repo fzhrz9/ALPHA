@@ -851,38 +851,67 @@ def monitor_active_trades():
                 continue
             cp = candles[-1]['c']
             mid = trade.get("msg_id")
+            entry_price = trade.get("entry", 0)
 
             def notify(text):
                 kw = {"parse_mode": "HTML"}
+                # Tambah symbol name dalam text untuk clarity
+                full_text = f"<b>{sym}</b>\n{text}"
                 if mid:
                     kw["reply_to_message_id"] = mid
                 try:
-                    bot.send_message(VIP_CHANNEL_ID, text, **kw)
+                    bot.send_message(VIP_CHANNEL_ID, full_text, **kw)
                 except Exception as e:
                     print(f"[MONITOR] Reply gagal untuk {sym}: {e}")
-                    bot.send_message(VIP_CHANNEL_ID, text, parse_mode="HTML")
+                    # Fallback: hantar tanpa reply
+                    bot.send_message(VIP_CHANNEL_ID, full_text, parse_mode="HTML")
 
             updates = {}
+
             if cp >= trade["tp1"] and not trade.get("tp1_hit"):
                 updates["tp1_hit"] = True
-                notify(f"✅ <b>{sym} — TP1 HIT!</b>\n💰 Harga: <code>${fmt(cp)}</code>\n🔒 Alih SL → BE: <code>${fmt(trade['entry'])}</code>")
+                profit_pct = (trade["tp1"] - entry_price) / entry_price * 100
+                notify(
+                    f"✅ <b>TP1 HIT!</b>\n"
+                    f"💰 Harga: <code>${fmt(cp)}</code>\n"
+                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>\n"
+                    f"🔒 Alih SL → BE: <code>${fmt(entry_price)}</code>"
+                )
+
             if cp >= trade["tp2"] and not trade.get("tp2_hit"):
                 updates["tp2_hit"] = True
-                notify(f"🚀 <b>{sym} — TP2 HIT!</b>\n💰 Harga: <code>${fmt(cp)}</code>\n📈 Trail SL → TP1: <code>${fmt(trade['tp1'])}</code>")
+                profit_pct = (trade["tp2"] - entry_price) / entry_price * 100
+                notify(
+                    f"🚀 <b>TP2 HIT!</b>\n"
+                    f"💰 Harga: <code>${fmt(cp)}</code>\n"
+                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>\n"
+                    f"📈 Trail SL → TP1: <code>${fmt(trade['tp1'])}</code>"
+                )
+
             if cp >= trade["tp3"] and not trade.get("tp3_hit"):
                 updates["tp3_hit"] = True
                 updates["closed"] = True
-                profit_pct = (cp - trade["entry"]) / trade["entry"] * 100
-                notify(f"🏆 <b>{sym} — TP3 MOONSHOT!</b>\n💰 Tutup: <code>${fmt(cp)}</code>\n📊 Profit: <code>+{profit_pct:.1f}%</code>")
+                profit_pct = (cp - entry_price) / entry_price * 100
+                notify(
+                    f"🏆 <b>TP3 MOONSHOT!</b>\n"
+                    f"💰 Tutup: <code>${fmt(cp)}</code>\n"
+                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>"
+                )
+
             elif cp <= trade["sl"] and not trade.get("sl_hit"):
                 updates["sl_hit"] = True
                 updates["closed"] = True
-                loss_pct = (cp - trade["entry"]) / trade["entry"] * 100
-                notify(f"❌ <b>{sym} — SL HIT</b>\n💰 Tutup: <code>${fmt(cp)}</code>\n📉 Loss: <code>{loss_pct:.1f}%</code>")
+                loss_pct = (cp - entry_price) / entry_price * 100
+                notify(
+                    f"❌ <b>SL HIT</b>\n"
+                    f"💰 Tutup: <code>${fmt(cp)}</code>\n"
+                    f"📉 Loss: <code>{loss_pct:.2f}%</code>"
+                )
 
             if updates:
                 update_signal(sym, updates)
                 print(f"[MONITOR] {sym}: {list(updates.keys())}")
+
         except Exception as e:
             print(f"[MONITOR] {sym}: {e}")
 
