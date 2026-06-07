@@ -534,17 +534,17 @@ def analyze_smc_pa(sym, verbose=True):
     major_swing_low = min(c['l'] for c in candles[-200:])
     sl_candidate = major_swing_low * 0.995  # 0.5% buffer bawah major swing low
 
-    # Safety net: Minimum SL 5% dari entry
-    min_sl_distance = entry * 0.05  # 5% minimum
-    sl_from_entry = entry - min_sl_distance
+    # Safety net: Minimum SL 5% dari harga (Guna 'price' bukan 'entry')
+    min_sl_distance = price * 0.05  # 5% minimum
+    sl_from_entry = price - min_sl_distance
 
     # Guna yang LEBIH RENDAH antara major swing low atau minimum 5%
     sl = min(sl_candidate, sl_from_entry)
 
     # Fallback jika SL masih terlalu dekat
-    if (entry - sl) < (entry * 0.05):
-        sl = entry * 0.95  # Force 5% SL
-        log(f"⚠️ SL adjusted to minimum 5%: ${fmt(sl)}")
+    if (price - sl) < (price * 0.05):
+        sl = price * 0.95  # Force 5% SL
+        log(f"️ SL adjusted to minimum 5%: ${fmt(sl)}")
 
     tp1 = swing_high
     tp2 = swing_low + (rng * 1.618)
@@ -552,18 +552,19 @@ def analyze_smc_pa(sym, verbose=True):
 
     risk = price - sl
     if risk <= 0:
-    # Safety: Jika SL calculation gagal (sideway trap), paksa SL 2% bawah entry
-    sl = price * 0.98
-    risk = price - sl
-    log(f"️ Risk calculation failed (SL > Price). Forced SL at -2%: ${fmt(sl)}")
+        # Safety: Jika SL calculation gagal (sideway trap), paksa SL 2% bawah entry
+        sl = price * 0.98
+        risk = price - sl
+        log(f"️ Risk calculation failed (SL > Price). Forced SL at -2%: ${fmt(sl)}")
 
-    log(f"📊 Major Swing Low: ${fmt(major_swing_low)} | Final SL: ${fmt(sl)} ({((entry-sl)/entry*100):.1f}% risk)")
+    log(f"📊 Major Swing Low: ${fmt(major_swing_low)} | Final SL: ${fmt(sl)} ({((price-sl)/price*100):.1f}% risk)")
 
     rr1 = (tp1 - price) / risk
     rr2 = (tp2 - price) / risk
 
-    log(f" SETUP COMPLETE: {setup_name} | Score: {score}")
-    # ── DETECT PENDING BOS (Untuk Real-Time Signal) ───────────
+    log(f"✅ SETUP COMPLETE: {setup_name} | Score: {score}")
+    
+    # ─ DETECT PENDING BOS (Untuk Real-Time Signal) ───────────
     # Letak di sini sebab variable 'price' dah wujud
     shs_list = [s for s in swings if s['type'] == 'SH']
     sls_list = [s for s in swings if s['type'] == 'SL']
