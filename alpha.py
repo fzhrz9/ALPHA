@@ -882,19 +882,14 @@ def scan_once():
                     passed += 1
                     time.sleep(2)
 
-        # ENGINE 2: MOMENTUM (M15) - HANYA TOP 100 VOLUME
-        if SCAN_MODE in ["momentum", "both"]:
-            if t in momentum_candidates:
-                if SCAN_MODE == "both" and is_in_cooldown(sym):
-                    continue
-                
-                # FIX 2: TREND ALIGNMENT (H1 Filter) - Jangan ambil M15 long kalau H1 bearish
-                candles_h1 = get_gateio_klines(sym, "1h", 50)
-                if len(candles_h1) >= 20:
-                    h1_closes = [c['c'] for c in candles_h1[-20:]]
-                    h1_ema20 = sum(h1_closes) / 20 # Simple EMA approximation for speed
-                    if candles_h1[-1]['c'] < h1_ema20:
-                        continue # Skip, H1 downtrend
+        # FIX 2: TREND ALIGNMENT (H1 Filter) - Longgarkan untuk V-shape recovery
+        candles_h1 = get_gateio_klines(sym, "1h", 50)
+        if len(candles_h1) >= 20:
+            h1_closes = [c['c'] for c in candles_h1[-20:]]
+            h1_ema20 = sum(h1_closes) / 20
+            # LONGGARKAN: Benarkan jika harga dalam 5% dari EMA20 H1
+            if candles_h1[-1]['c'] < h1_ema20 * 0.95:
+                continue # Skip, H1 masih terlalu bearish
 
                 # Ambil data M15
                 candles_m15 = get_gateio_klines(sym, "15m", 100)
@@ -911,7 +906,7 @@ def scan_once():
                 avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
                 curr_vol = curr['v']
                  
-                if curr_vol >= (avg_vol * 3):
+                if curr_vol >= (avg_vol * 2.5):
                     if sym not in WATCHLIST:
                         WATCHLIST[sym] = time.time()
                         print(f"[{sym}] 📌 MASUK WATCHLIST: Volume Anomaly ({curr_vol/avg_vol:.1f}x)")
@@ -924,14 +919,14 @@ def scan_once():
                     range_high = max(highs)
                     range_low = min(lows)
                     total_range = range_high - range_low
-                    if curr['c'] < (range_low + (total_range * 0.75)):
+                    if curr['c'] < (range_low + (total_range * 0.60)):
                         if sym in WATCHLIST: del WATCHLIST[sym]
                         continue # Weak close, skip
 
                     # FIX 4: MICRO BOS - Mesti break local lower high terdekat
                     recent_highs = [c['h'] for c in candles_m15[-20:-1]]
                     local_lh = max(recent_highs) if recent_highs else range_high
-                    if curr['c'] <= local_lh:
+                    if curr['c'] <= local_lh and vol_spike < 4.0:  # Benarkan jika vol >4x
                         if sym in WATCHLIST: del WATCHLIST[sym]
                         continue # Belum ada BOS, skip
 
@@ -944,7 +939,7 @@ def scan_once():
                                     curr['c'] > prev['o'] and curr['o'] < prev['c'])
                     
                     # Jika SEMUA syarat Institutional cukup, terus tembak!
-                    if range_pct <= 5 and (is_pinbar or is_engulfing):
+                    if range_pct <= 8 and (is_pinbar or is_engulfing):
                         smc_m15 = {
                              "setup": "⚡ PINBAR MOMENTUM" if is_pinbar else " ENGULFING MOMENTUM",
                              "entry": curr['c'], "sl": min(lows[-20:]) * 0.99,
