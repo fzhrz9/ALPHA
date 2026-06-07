@@ -749,14 +749,16 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
                 tr = max(c['h'] - c['l'], abs(c['h'] - prev['c']), abs(c['l'] - prev['c']))
                 trs.append(tr)
             atr = sum(trs) / len(trs)
-            threshold = max(2.0, (atr / entry) * 100 * 2.0)
+            threshold = max(3.0, (atr / entry) * 100 * 3.0)
         
         if price_gap > threshold:
-            print(f"[PASS] {sym}: Harga bergerak {price_gap:.1f}%. Isyarat tetap dihantar!")
-            extra_warning = f"\n│ ⚠️ PERHATIAN: HARGA LARI {price_gap:.1f}% DARI ENTRY │"
+            print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}% (Threshold: {threshold:.1f}%)")
+            print(f"  Entry (candle close): ${fmt(entry)}")
+            print(f"  Current price: ${fmt(current_price)}")
             if smc_data["score"] >= 2 and sym not in PULLBACK_WATCHLIST:
                 PULLBACK_WATCHLIST[sym] = {"entry": entry, "sl": sl, "added": time.time()}
-            # Buang 'return False' di sini supaya isyarat berjaya masuk.
+                print(f"  → MASUK PULLBACK WATCHLIST")
+        return False
 
     msg = build_balanced_signal(sym, smc_data, vol_24h, btc_chg, extra_warning=extra_warning)
 
