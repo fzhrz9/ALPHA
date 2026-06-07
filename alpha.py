@@ -523,9 +523,11 @@ def analyze_smc_pa(sym, verbose=True):
             pass
 
     # Gagal score minimum
-    if not setup_name or score < 2:
+    if score < 2:
         log(f"❌ REJECT: Score {score} < 2")
         return None
+    if not setup_name:
+        setup_name = "📊 MIXED SETUP"  # Fallback nama jika logic sequence miss
 
     # 9. KIRA SL & TP — MAJOR SWING LOW + MINIMUM 5%
     # Guna major swing low dari 200 candle (bukan fractal kecil)
@@ -550,8 +552,10 @@ def analyze_smc_pa(sym, verbose=True):
 
     risk = price - sl
     if risk <= 0:
-        log("❌ REJECT: Risk invalid")
-        return None
+    # Safety: Jika SL calculation gagal (sideway trap), paksa SL 2% bawah entry
+    sl = price * 0.98
+    risk = price - sl
+    log(f"️ Risk calculation failed (SL > Price). Forced SL at -2%: ${fmt(sl)}")
 
     log(f"📊 Major Swing Low: ${fmt(major_swing_low)} | Final SL: ${fmt(sl)} ({((entry-sl)/entry*100):.1f}% risk)")
 
