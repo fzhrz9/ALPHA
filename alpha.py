@@ -603,7 +603,7 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
                 trs.append(tr)
             atr = sum(trs) / len(trs)
             atr_pct = (atr / entry) * 100
-            threshold = max(2.0, atr_pct * 2.0)
+            threshold = max(15, atr_pct * 4.0)
 
         if price_gap > threshold:
             print(f"[SKIP] {sym}: Harga dah bergerak {price_gap:.1f}% (Threshold: {threshold:.1f}%)")
