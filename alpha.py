@@ -788,68 +788,79 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
 # 9. SCANNER & MONITORS (MULTI-THREADING ADDED)
 # =================================================================
 def process_coin(t, btc_chg, cfg, momentum_candidates):
-    sym = t["symbol"]
-    current_price = t.get("last_price", 0)
-    
-    if is_blacklisted_symbol(sym)[0]: return
-    if is_in_cooldown(sym) and not check_cooldown_override(sym, current_price): return
-    if sym in get_active_trades(): return
-
-    print(f"[{sym}] ANALYZING...")
-
-    if SCAN_MODE in ["pullback", "both"]:
-        smc = analyze_smc_pa(sym, verbose=True)
-        if smc and smc["score"] >= cfg["score_pass"]:
-            send_signal(sym, smc, t["volume_24h"], btc_chg=btc_chg)
-
-    if SCAN_MODE in ["momentum", "both"] and t in momentum_candidates:
-        if SCAN_MODE == "both" and is_in_cooldown(sym): return
+    try:
+        sym = t["symbol"]
+        current_price = t.get("last_price", 0)
         
-        candles_h1 = get_gateio_klines(sym, "1h", 50)
-        if len(candles_h1) >= 20:
-            h1_ema20 = calculate_ema([c['c'] for c in candles_h1[-20:]], 20)
-            if candles_h1[-1]['c'] < h1_ema20 * 0.95: return
+        if is_blacklisted_symbol(sym)[0]: return
+        if is_in_cooldown(sym) and not check_cooldown_override(sym, current_price): return
+        if sym in get_active_trades(): return
 
-        candles_m15 = get_gateio_klines(sym, "15m", 100)
-        if len(candles_m15) < 50: return
-        curr = candles_m15[-1]
-        
-        avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
-        curr_vol = curr['v']
-        
-        if curr_vol >= (avg_vol * 2.5):
-            if sym not in WATCHLIST: WATCHLIST[sym] = time.time()
+        print(f"[{sym}] ANALYZING...")
+
+        if SCAN_MODE in ["pullback", "both"]:
+            smc = analyze_smc_pa(sym, verbose=True)
+            if smc:
+                # [TAMBAHAN LOGIK]: Beritahu kenapa tak hantar Telegram jika Score tak lepas
+                if smc["score"] >= cfg["score_pass"]:
+                    send_signal(sym, smc, t["volume_24h"], btc_chg=btc_chg)
+                else:
+                    print(f"[{sym}-H1] ⚠️ SKIP TELEGRAM: Score ({smc['score']}) tak lepas syarat Preset (Min: {cfg['score_pass']})")
+
+        if SCAN_MODE in ["momentum", "both"] and t in momentum_candidates:
+            if SCAN_MODE == "both" and is_in_cooldown(sym): return
             
-            highs = [c['h'] for c in candles_m15[-50:]]
-            lows = [c['l'] for c in candles_m15[-50:]]
-            range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+            candles_h1 = get_gateio_klines(sym, "1h", 50)
+            if len(candles_h1) >= 20:
+                h1_ema20 = calculate_ema([c['c'] for c in candles_h1[-20:]], 20)
+                if candles_h1[-1]['c'] < h1_ema20 * 0.95: return
+
+            candles_m15 = get_gateio_klines(sym, "15m", 100)
+            if len(candles_m15) < 50: return
+            curr = candles_m15[-1]
             
-            range_high = max(highs)
-            range_low = min(lows)
-            total_range = range_high - range_low
-            if curr['c'] < (range_low + (total_range * 0.60)):
+            avg_vol = sum(c['v'] for c in candles_m15[-20:-1]) / 19
+            curr_vol = curr['v']
+            
+            if curr_vol >= (avg_vol * 2.5):
+                if sym not in WATCHLIST: WATCHLIST[sym] = time.time()
+                
+                highs = [c['h'] for c in candles_m15[-50:]]
+                lows = [c['l'] for c in candles_m15[-50:]]
+                range_pct = (max(highs) - min(lows)) / min(lows) * 100 if min(lows) > 0 else 100
+                
+                range_high = max(highs)
+                range_low = min(lows)
+                total_range = range_high - range_low
+                if curr['c'] < (range_low + (total_range * 0.60)):
+                    WATCHLIST.pop(sym, None)
+                    return
+
+                recent_highs = [c['h'] for c in candles_m15[-20:-1]]
+                local_lh = max(recent_highs) if recent_highs else range_high
+                if curr['c'] <= local_lh and curr_vol/avg_vol < 4.0:
+                    WATCHLIST.pop(sym, None)
+                    return
+
+                prev = candles_m15[-2]
+                body = abs(curr['c'] - curr['o'])
+                lower_wick = min(curr['o'], curr['c']) - curr['l']
+                is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
+                is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and curr['c'] > prev['o'] and curr['o'] < prev['c'])
+                
+                if range_pct <= 8 and (is_pinbar or is_engulfing):
+                    smc_m15 = analyze_early_momentum(sym, verbose=False)
+                    if smc_m15:
+                        if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
+                            WATCHLIST.pop(sym, None)
+            else:
                 WATCHLIST.pop(sym, None)
-                return
-
-            recent_highs = [c['h'] for c in candles_m15[-20:-1]]
-            local_lh = max(recent_highs) if recent_highs else range_high
-            if curr['c'] <= local_lh and curr_vol/avg_vol < 4.0:
-                WATCHLIST.pop(sym, None)
-                return
-
-            prev = candles_m15[-2]
-            body = abs(curr['c'] - curr['o'])
-            lower_wick = min(curr['o'], curr['c']) - curr['l']
-            is_pinbar = lower_wick > (body * 2) and curr['c'] > curr['o']
-            is_engulfing = (curr['c'] > curr['o'] and prev['c'] < prev['o'] and curr['c'] > prev['o'] and curr['o'] < prev['c'])
-            
-            if range_pct <= 8 and (is_pinbar or is_engulfing):
-                smc_m15 = analyze_early_momentum(sym, verbose=False)
-                if smc_m15:
-                    if send_signal(sym, smc_m15, t["volume_24h"], btc_chg=btc_chg):
-                        WATCHLIST.pop(sym, None)
-        else:
-            WATCHLIST.pop(sym, None)
+                
+    except Exception as e:
+        # [PENYELESAIAN CRASH]: Ralat akan dijerit pada konsol, tak lagi disenyapkan!
+        import traceback
+        print(f"\n❌ [RALAT KRITIKAL TERSEMBUNYI] {sym}: {e}")
+        traceback.print_exc()
 
 def scan_once():
     if not IS_SCANNING: return
