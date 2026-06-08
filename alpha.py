@@ -644,10 +644,65 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
                 add_pullback_watchlist(sym, smc_data)
             return False 
 
-    sl_pct = (entry - sl) / entry * 100
-    tp1_pct = (tp1 - entry) / entry * 100
-    tp2_pct = (tp2 - entry) / entry * 100
-    tp3_pct = (tp3 - entry) / entry * 100
+def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
+    cfg = get_config()
+    if smc_data["score"] < cfg["score_pass"]:
+        return False
+        
+    entry = smc_data["entry"]
+    sl = smc_data["sl"]
+    tp1, tp2, tp3 = smc_data["tp1"], smc_data["tp2"], smc_data["tp3"]
+    timeframe = smc_data.get("timeframe", "H1")
+
+    # ── 1. DETECT LONG VS SHORT ─────────────────────────────
+    # Jika SL > Entry, ini adalah SHORT. Jika SL < Entry, ini LONG.
+    is_short = sl > entry 
+    
+    # Kira Jarak Mutlak (Absolute Distance) untuk RR
+    risk_distance = abs(entry - sl)
+    reward_distance = abs(tp1 - entry)
+    
+    # ── 2. FILTER RISK:REWARD (Wajib最少 1:1) ──────────────
+    # Jika Risiko lebih besar dari Ganjaran, REJECT!
+    if risk_distance > reward_distance:
+        print(f"[REJECT RR] {sym}: Risk ({risk_distance:.2f}) > Reward ({reward_distance:.2f}). Setup teruk.")
+        return False
+
+    # ─ 3. KIRA PERATUSAN TEPAT (Long vs Short) ─────────────
+    if is_short:
+        # Untuk Short: SL di atas (Loss %), TP di bawah (Win %)
+        sl_pct = (sl - entry) / entry * 100   # Positive number (e.g., 24.8%)
+        tp1_pct = (entry - tp1) / entry * 100 # Positive number (e.g., 5.0%)
+        tp2_pct = (entry - tp2) / entry * 100
+        tp3_pct = (entry - tp3) / entry * 100
+        direction_label = " SHORT"
+    else:
+        # Untuk Long: SL di bawah (Loss %), TP di atas (Win %)
+        sl_pct = (entry - sl) / entry * 100
+        tp1_pct = (tp1 - entry) / entry * 100
+        tp2_pct = (tp2 - entry) / entry * 100
+        tp3_pct = (tp3 - entry) / entry * 100
+        direction_label = "🟢 LONG"
+
+    # ... (Kod lama anda untuk current_price check & markup button kekal sama) ...
+    # ... (Sila pastikan variable 'msg' di bawah guna 'direction_label') ...
+
+    # CONTOH FORMAT MSG YANG BARU (Gantikan bahagian msg = ...):
+    msg = (
+        f"{engine_icon} <b>ALPHA {engine_label} — {sym}/USDT</b> [{direction_label}]\n"
+        f"📋 <code>{sym}USDT</code>\n\n"
+        f"💰 <b>Entry: </b> <code>${fmt(entry)}</code>\n"
+        f"📊 <b>Vol24H: </b> <code>${vol_24h/1e6:.2f}M</code>\n\n"
+        f"🛑 <b>SL: </b> <code>${fmt(sl)}</code> <i>(Risk: {sl_pct:.1f}%)</i>\n"
+        f" <b>TP1: </b> <code>${fmt(tp1)}</code> <i>(Win: +{tp1_pct:.1f}%)</i>\n"
+        f" <b>TP2: </b> <code>${fmt(tp2)}</code> <i>(Win: +{tp2_pct:.1f}%)</i>\n"
+        f"📈 <b>TP3: </b> <code>${fmt(tp3)}</code> <i>(Win: +{tp3_pct:.1f}%)</i>\n\n"
+        f"🧠 <b>Setup: </b> <code>{smc_data['setup']}</code>\n"
+        f"⏱️ <b>Timeframe: </b> <code>{timeframe}</code> | <b>Score: </b> <code>{smc_data['score']}/{cfg['score_pass']}</code>"
+    )
+    # ... (Baki kod send_signal kekal sama: try bot.send_message...)
+
+    
 
     btc_warn = ""
     if btc_chg < -4.0:
@@ -852,60 +907,73 @@ def monitor_active_trades():
             cp = candles[-1]['c']
             mid = trade.get("msg_id")
             entry_price = trade.get("entry", 0)
+            
+            # Detect Long/Short based on SL position
+            is_short = trade["sl"] > entry_price
 
             def notify(text):
                 kw = {"parse_mode": "HTML"}
-                # Tambah symbol name dalam text untuk clarity
-                full_text = f"<b>{sym}</b>\n{text}"
+                # Format: [SYMBOL] - STATUS
+                full_text = f"<b>🔔 {sym}</b>\n{text}"
                 if mid:
                     kw["reply_to_message_id"] = mid
                 try:
                     bot.send_message(VIP_CHANNEL_ID, full_text, **kw)
-                except Exception as e:
-                    print(f"[MONITOR] Reply gagal untuk {sym}: {e}")
-                    # Fallback: hantar tanpa reply
+                except Exception:
                     bot.send_message(VIP_CHANNEL_ID, full_text, parse_mode="HTML")
 
             updates = {}
 
-            if cp >= trade["tp1"] and not trade.get("tp1_hit"):
+            # ── LOGIC TP HIT (WIN) ──────────────────────────
+            # Untuk Long: CP >= TP. Untuk Short: CP <= TP.
+            hit_tp1 = (cp >= trade["tp1"]) if not is_short else (cp <= trade["tp1"])
+            hit_tp2 = (cp >= trade["tp2"]) if not is_short else (cp <= trade["tp2"])
+            hit_tp3 = (cp >= trade["tp3"]) if not is_short else (cp <= trade["tp3"])
+
+            if hit_tp1 and not trade.get("tp1_hit"):
                 updates["tp1_hit"] = True
-                profit_pct = (trade["tp1"] - entry_price) / entry_price * 100
+                # Kira Win % (Sentiasa positif)
+                win_pct = abs(trade["tp1"] - entry_price) / entry_price * 100
                 notify(
                     f"✅ <b>TP1 HIT!</b>\n"
                     f"💰 Harga: <code>${fmt(cp)}</code>\n"
-                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>\n"
+                    f"🏆 <b>Win: +{win_pct:.2f}%</b>\n"
                     f"🔒 Alih SL → BE: <code>${fmt(entry_price)}</code>"
                 )
 
-            if cp >= trade["tp2"] and not trade.get("tp2_hit"):
+            if hit_tp2 and not trade.get("tp2_hit"):
                 updates["tp2_hit"] = True
-                profit_pct = (trade["tp2"] - entry_price) / entry_price * 100
+                win_pct = abs(trade["tp2"] - entry_price) / entry_price * 100
                 notify(
                     f"🚀 <b>TP2 HIT!</b>\n"
                     f"💰 Harga: <code>${fmt(cp)}</code>\n"
-                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>\n"
+                    f"🏆 <b>Win: +{win_pct:.2f}%</b>\n"
                     f"📈 Trail SL → TP1: <code>${fmt(trade['tp1'])}</code>"
                 )
 
-            if cp >= trade["tp3"] and not trade.get("tp3_hit"):
+            if hit_tp3 and not trade.get("tp3_hit"):
                 updates["tp3_hit"] = True
                 updates["closed"] = True
-                profit_pct = (cp - entry_price) / entry_price * 100
+                win_pct = abs(cp - entry_price) / entry_price * 100
                 notify(
                     f"🏆 <b>TP3 MOONSHOT!</b>\n"
                     f"💰 Tutup: <code>${fmt(cp)}</code>\n"
-                    f"📊 Profit: <code>+{profit_pct:.2f}%</code>"
+                    f" <b>Total Win: +{win_pct:.2f}%</b>"
                 )
 
-            elif cp <= trade["sl"] and not trade.get("sl_hit"):
+            # ─ LOGIC SL HIT (LOSS) ─────────────────────────
+            # Untuk Long: CP <= SL. Untuk Short: CP >= SL.
+            hit_sl = (cp <= trade["sl"]) if not is_short else (cp >= trade["sl"])
+
+            if hit_sl and not trade.get("sl_hit"):
                 updates["sl_hit"] = True
                 updates["closed"] = True
-                loss_pct = (cp - entry_price) / entry_price * 100
+                # Kira Loss % (Sentiasa negatif)
+                loss_pct = -abs(cp - entry_price) / entry_price * 100
                 notify(
                     f"❌ <b>SL HIT</b>\n"
                     f"💰 Tutup: <code>${fmt(cp)}</code>\n"
-                    f"📉 Loss: <code>{loss_pct:.2f}%</code>"
+                    f"📉 <b>Loss: {loss_pct:.2f}%</b>"
                 )
 
             if updates:
@@ -914,7 +982,6 @@ def monitor_active_trades():
 
         except Exception as e:
             print(f"[MONITOR] {sym}: {e}")
-
 # =================================================================
 # 8. TELEGRAM COMMANDS
 # =================================================================
