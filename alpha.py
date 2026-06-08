@@ -3,27 +3,30 @@ ALPHA — Gate.io Dual Engine Sniper (Institutional Grade)
 Engine 1: Pullback SMC (H1 + H4) — Fractal Swing + EMA + VPA Impulse
 Engine 2: Early Momentum (M15) — Volume Anomaly + Accumulation
 Mode: /mode pullback | momentum | both
-
+v14.5: NOVA7 RISK MANAGEMENT INTEGRATION
+  - Position sizing dengan modal user
+  - ATR + structure SL calculation
+  - Hard cap 50% modal per trade
+  - Command /modal untuk set capital
 CHANGELOG v14.1 (TIMEOUT OPTIMIZATION):
-  [CONFIG] WATCHLIST timeout: 600s → 900s (15 minit, untuk M15 momentum)
-  [CONFIG] PULLBACK_TIMEOUT: 1200s → 28800s (8 jam, untuk SL hunt/reject/retest)
-  [CONFIG] BOS_WATCHLIST_TIMEOUT: 1800s → 28800s (8 jam, untuk breakout + retest)
-  [REASON] 8 jam = 2 × H4 candles = professional SL hunt window untuk pullback strategy
-
+[CONFIG] WATCHLIST timeout: 600s → 900s (15 minit, untuk M15 momentum)
+[CONFIG] PULLBACK_TIMEOUT: 1200s → 28800s (8 jam, untuk SL hunt/reject/retest)
+[CONFIG] BOS_WATCHLIST_TIMEOUT: 1800s → 28800s (8 jam, untuk breakout + retest)
+[REASON] 8 jam = 2 × H4 candles = professional SL hunt window untuk pullback strategy
 CHANGELOG v14 (AUDIT FIXES):
-  [FIX-1]  SL Engine 1: Guna ATR + Fib78.6% combo (bukan simple 0.5% sahaja)
-  [FIX-2]  SL/TP Engine 2: SL = min_low - ATR*0.75 | TP guna Fib ratio (1.618R, 2.618R, 4.236R)
-  [FIX-3]  H4 EMA loop: Was iterating empty list h4_closes[20:] — fixed ke calculate_ema() full
-  [FIX-4]  get_active_trades() dipindah LUAR loop — dari N×DB calls ke 1×DB call
-  [FIX-5]  Threading Lock ditambah untuk WATCHLIST, PULLBACK_WATCHLIST, BOS_WATCHLIST
-  [FIX-6]  add_pullback_watchlist: fib_500/fib_786 mapping betulkan (bukan tp1/sl)
-  [FIX-7]  analyze_smc_pa return dict: tambah fib_500, fib_786 keys
-  [FIX-8]  Minimum RR filter ditambah dalam send_signal() — RR1 >= 1.5
-  [FIX-9]  TP ordering validation — tp1 > entry > sl diperiksa sebelum signal dihantar
-  [FIX-10] Counter-trend TP cap: cek tp1 != tp2 selepas capping
-  [FIX-11] scan_once M15 inline: SL/TP guna ATR + Fib ratio (bukan arbitrary 3R/5R)
-  [FIX-12] scan_once: tambah IS_SCANNING_LOCK untuk elak double-scan race condition
-  [FIX-13] fib_618 dipakai secara bermakna untuk OB validation zone
+[FIX-1]  SL Engine 1: Guna ATR + Fib78.6% combo (bukan simple 0.5% sahaja)
+[FIX-2]  SL/TP Engine 2: SL = min_low - ATR*0.75 | TP guna Fib ratio (1.618R, 2.618R, 4.236R)
+[FIX-3]  H4 EMA loop: Was iterating empty list h4_closes[20:] — fixed ke calculate_ema() full
+[FIX-4]  get_active_trades() dipindah LUAR loop — dari N×DB calls ke 1×DB call
+[FIX-5]  Threading Lock ditambah untuk WATCHLIST, PULLBACK_WATCHLIST, BOS_WATCHLIST
+[FIX-6]  add_pullback_watchlist: fib_500/fib_786 mapping betulkan (bukan tp1/sl)
+[FIX-7]  analyze_smc_pa return dict: tambah fib_500, fib_786 keys
+[FIX-8]  Minimum RR filter ditambah dalam send_signal() — RR1 >= 1.5
+[FIX-9]  TP ordering validation — tp1 > entry > sl diperiksa sebelum signal dihantar
+[FIX-10] Counter-trend TP cap: cek tp1 != tp2 selepas capping
+[FIX-11] scan_once M15 inline: SL/TP guna ATR + Fib ratio (bukan arbitrary 3R/5R)
+[FIX-12] scan_once: tambah IS_SCANNING_LOCK untuk elak double-scan race condition
+[FIX-13] fib_618 dipakai secara bermakna untuk OB validation zone
 """
 import os, time, json, requests, threading, traceback, schedule
 from telebot import TeleBot
@@ -32,15 +35,14 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from supabase import create_client, Client
 
-# =================================================================
+# ==========================================
 # 1. KONFIGURASI
-# =================================================================
+# ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 VIP_CHANNEL_ID = os.environ.get("VIP_CHANNEL_ID")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
 START_TIME = time.time()
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -57,13 +59,13 @@ def alert_admin(text):
     except Exception:
         pass
 
-# =================================================================
+# ==========================================
 # 2. PRESETS & SUPABASE HELPERS
-# =================================================================
+# ==========================================
 PRESETS = {
-    "soft":     {"min_vol_24h": 500_000,   "score_pass": 2, "label": "🟢 SOFT"},
-    "standard": {"min_vol_24h": 1_000_000, "score_pass": 3, "label": "🟡 STANDARD"},
-    "hard":     {"min_vol_24h": 2_500_000, "score_pass": 4, "label": "🔴 HARD"}
+    "soft":     {"min_vol_24h": 500_000,    "score_pass": 2,  "label": "🟢 SOFT"},
+    "standard": {"min_vol_24h": 1_000_000,  "score_pass": 3,  "label": "🟡 STANDARD"},
+    "hard":     {"min_vol_24h": 2_500_000,  "score_pass": 4,  "label": "🔴 HARD"}
 }
 
 DEFAULT_CONFIG = {
@@ -170,11 +172,74 @@ def get_signals_since(days=7):
     except Exception:
         return []
 
-# =================================================================
+# ==========================================
+# [NOVA7-RISK] PENGURUSAN RISIKO INSTITUTIONAL GRADE
+# ==========================================
+
+def set_user_capital(user_id, capital, risk_pct=2.0):
+    """Simpan modal dan risk percentage pengguna ke Supabase."""
+    try:
+        sb.table("user_profiles").upsert({
+            "user_id": user_id,
+            "capital": capital,
+            "risk_pct": risk_pct,
+            "updated": int(time.time())
+        }).execute()
+    except Exception as e:
+        print(f"[USER CAPITAL] Error: {e}")
+
+def get_user_capital(user_id):
+    """Ambil modal dan risk percentage pengguna dari Supabase."""
+    try:
+        rows = sb.table("user_profiles").select("*").eq("user_id", user_id).execute().data
+        if rows:
+            return rows[0].get("capital", 50.0), rows[0].get("risk_pct", 2.0)
+    except Exception:
+        pass
+    return 50.0, 2.0  # Default: modal $50, risk 2%
+
+def calculate_position_size(capital, risk_pct, entry, sl):
+    """
+    Position size dengan double cap:
+    1. Cap kepada capital (no leverage)
+    2. Hard cap: tidak melebihi 50% modal dalam satu trade
+    """
+    risk_usd = capital * (risk_pct / 100.0)
+    risk_distance = entry - sl
+    if risk_distance <= 0:
+        return 0, 0, 0
+    
+    position_usd_raw = risk_usd / (risk_distance / entry)
+    
+    # Cap 1: tidak melebihi modal penuh
+    position_usd = min(position_usd_raw, capital)
+    
+    # Cap 2: tidak melebihi 50% modal dalam satu trade (risk management)
+    position_usd = min(position_usd, capital * 0.50)
+    
+    position_coins = position_usd / entry
+    actual_risk_usd = position_coins * risk_distance
+    
+    return position_usd, position_coins, actual_risk_usd
+
+def compute_final_sl(entry, structure_low, atr, atr_mult=1.5, max_sl_pct=0.08):
+    """
+    Combine ATR-based SL dengan structure SL.
+    Pilih yang lebih jauh dari entry (lebih konservatif untuk crypto noise).
+    Cap maksimum SL distance untuk elak position size mikroskopik.
+    """
+    sl_atr = entry - (atr_mult * atr) if atr > 0 else entry * 0.98
+    sl_structure = structure_low * 0.995  # buffer 0.5% bawah structure
+    sl_raw = min(sl_atr, sl_structure)  # ambil yang lebih jauh (lower price)
+    sl_floor = entry * (1.0 - max_sl_pct)  # cap: tidak lebih 8% dari entry
+    final_sl = max(sl_raw, sl_floor)
+    return final_sl
+
+# ==========================================
 # 3. HELPER & GATE.IO API + BLOCKLIST + MATH FUNCTIONS
-# =================================================================
-STABLECOINS     = {"USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","GUSD","USDD","FDUSD","PYUSD","USDK","SUSD","RSR","EURS","EURT","UST","ALUSD","MIM","CUSD","CEUR","XAUT","PAXG"}
-WRAPPED_TOKENS  = {"WETH","WBTC","WBNB","WSOL","WMATIC","WAVAX","WFTM","BETH","STETH","RETH","CBETH"}
+# ==========================================
+STABLECOINS     = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "FRAX", "LUSD", "GUSD", "USDD", "FDUSD", "PYUSD", "USDK", "SUSD", "RSR", "EURS", "EURT", "UST", "ALUSD", "MIM", "CUSD", "CEUR", "XAUT", "PAXG"}
+WRAPPED_TOKENS  = {"WETH", "WBTC", "WBNB", "WSOL", "WMATIC", "WAVAX", "WFTM", "BETH", "STETH", "RETH", "CBETH"}
 SYMBOL_BLACKLIST = STABLECOINS | WRAPPED_TOKENS
 
 def is_blacklisted_symbol(sym):
@@ -184,7 +249,7 @@ def is_blacklisted_symbol(sym):
     for blacklisted in SYMBOL_BLACKLIST:
         if blacklisted in s:
             return True, f"Blacklisted (partial): {s}"
-    for suffix in ["5L","5S","3L","3S","2L","2S","1L","1S","UP","DOWN","BULL","BEAR"]:
+    for suffix in ["5L", "5S", "3L", "3S", "2L", "2S", "1L", "1S", "UP", "DOWN", "BULL", "BEAR"]:
         if s.endswith(suffix):
             return True, f"Leveraged: {s}"
     return False, None
@@ -243,9 +308,9 @@ def get_gateio_klines(sym, interval="1h", limit=200):
     except Exception:
         return []
 
-# =================================================================
+# ==========================================
 # MATH HELPERS (INSTITUTIONAL GRADE)
-# =================================================================
+# ==========================================
 def calculate_ema(data, period):
     """Standard EMA — seed dengan SMA(period), kemudian iterasi."""
     if len(data) < period:
@@ -273,11 +338,11 @@ def find_fractal_swings(candles, lookback=2):
     Detect fractal swing highs/lows.
     Primary:   lookback=2, full range — strict, low noise.
     Secondary: lookback=1, last 4 candles — [FIX-14] catch forming HH/HL
-               that are invisible due to 2-candle confirmation lag.
+    that are invisible due to 2-candle confirmation lag.
     """
     swings = []
     n = len(candles)
-
+    
     # Primary pass — conservative
     for i in range(lookback, n - lookback):
         is_sh = is_sl = True
@@ -316,7 +381,7 @@ def check_market_structure(swings):
     """
     if len(swings) < 2:
         return 'unknown'
-
+    
     all_highs = sorted([s for s in swings if s['type'] == 'SH'], key=lambda x: x['index'])
     all_lows  = sorted([s for s in swings if s['type'] == 'SL'], key=lambda x: x['index'])
 
@@ -345,7 +410,6 @@ def check_market_structure(swings):
 def find_fresh_swing_pair(swings):
     """
     [FIX-21] Cari swing pair yang logically connected untuk Fib.
-
     Masalah lama: shs[-1] dan sls[-1] boleh jadi dari gelombang BERBEZA.
     Contoh KITE: shs[-1]=HH 0.2022, sls[-1]=SL dari Jun bottom 0.163.
     Fib jadi terlalu besar → price 0.193 nampak PREMIUM → REJECT padahal betul entry!
@@ -354,13 +418,16 @@ def find_fresh_swing_pair(swings):
     """
     if not swings:
         return None, None
+    
     shs = [s for s in swings if s['type'] == 'SH']
     sls = [s for s in swings if s['type'] == 'SL']
+    
     if not shs or not sls:
         return None, None
 
     latest_sh    = shs[-1]
     sl_before_sh = [s for s in sls if s['index'] < latest_sh['index']]
+    
     if not sl_before_sh:
         return None, None
 
@@ -374,11 +441,9 @@ def find_fresh_swing_pair(swings):
 
     return latest_sh['price'], latest_sl['price']
 
-
 def find_anchor_swing_pair(swings):
     """
     Cari swing pair untuk SWING TRADING Fib (gelombang besar/anchor).
-
     Berbeza dengan find_fresh_swing_pair():
     - Fresh  → SL paling terkini sebelum SH  (intraday, range kecil)
     - Anchor → SL paling RENDAH sebelum SH   (swing, range besar = recovery wave)
@@ -389,11 +454,13 @@ def find_anchor_swing_pair(swings):
     """
     shs = [s for s in swings if s['type'] == 'SH']
     sls = [s for s in swings if s['type'] == 'SL']
+    
     if not shs or not sls:
         return None, None
 
     latest_sh    = shs[-1]
     sl_before_sh = [s for s in sls if s['index'] < latest_sh['index']]
+    
     if not sl_before_sh:
         return None, None
 
@@ -408,8 +475,7 @@ def find_anchor_swing_pair(swings):
 
     return latest_sh['price'], anchor_sl['price']
 
-
-
+def detect_fvg(candles, lookback=30):
     """
     [FIX-22] Fair Value Gap (FVG) — SMC/ICT imbalance zone.
 
@@ -439,10 +505,9 @@ def find_anchor_swing_pair(swings):
                 })
     return fvgs   # terkini dahulu (loop dari i=2 ke atas)
 
-
-# =================================================================
+# ==========================================
 # 4. ENGINE 1: PULLBACK SMC (H1 + H4) — INSTITUTIONAL GRADE
-# =================================================================
+# ==========================================
 def analyze_smc_pa(sym, verbose=True):
     log = lambda msg: print(f"[{sym}-H1] {msg}") if verbose else None
     candles = get_gateio_klines(sym, "1h", 200)
@@ -477,7 +542,7 @@ def analyze_smc_pa(sym, verbose=True):
     ema20     = calculate_ema(closes, 20)
     ema50     = calculate_ema(closes, 50)
     price_now = candles[-1]['c']
-    # EMA jelas bullish jika EMA20>EMA50 dan price tidak jauh bawah EMA20
+    # EMA jelas bullish jika EMA20 > EMA50 dan price tidak jauh bawah EMA20
     ema_bullish = ema20 > ema50 and price_now > ema20 * 0.95
 
     # 4. SEMAK STRUKTUR MARKET
@@ -501,19 +566,20 @@ def analyze_smc_pa(sym, verbose=True):
     elif structure == 'downtrend':
         log(f"❌ REJECT: Market structure downtrend (fractal + EMA kedua-dua confirm)")
         return None
+    
     log(f"✅ STRUCTURE: {structure}")
 
     shs        = [s for s in swings if s['type'] == 'SH']
     sls        = [s for s in swings if s['type'] == 'SL']
 
     # [FIX-21] DUAL FIB SYSTEM — Fresh (Intraday) + Anchor (Swing)
-    # ─────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────
     # FRESH  = SL terkini sebelum HH → Intraday/Scalping zone (range kecil)
     # ANCHOR = SL terendah sebelum HH → Swing zone (recovery wave besar)
     # Cuba FRESH dulu. Jika price tidak dalam fresh zone, cuba ANCHOR.
     # ─────────────────────────────────────────────────────────────────
 
-    fresh_sh,  fresh_sl  = find_fresh_swing_pair(swings)
+    fresh_sh,  fresh_sl   = find_fresh_swing_pair(swings)
     anchor_sh, anchor_sl = find_anchor_swing_pair(swings)
 
     # Kira fib untuk kedua-dua
@@ -533,13 +599,13 @@ def analyze_smc_pa(sym, verbose=True):
     prev  = candles[-2]
     price = curr['c']
 
-    in_fresh_zone  = fresh_fib  and fresh_fib["fib786"]  <= price <= fresh_fib["fib500"]
-    in_anchor_zone = anchor_fib and anchor_fib["fib786"] <= price <= anchor_fib["fib500"]
+    in_fresh_zone   = fresh_fib  and fresh_fib["fib786"]   <= price <= fresh_fib["fib500"]
+    in_anchor_zone = anchor_fib and anchor_fib["fib786"]  <= price <= anchor_fib["fib500"]
 
     # Fresh dan anchor sama? (hanya 1 SL tersedia) — jangan double count
     same_pair = (fresh_sh == anchor_sh and fresh_sl == anchor_sl)
 
-    if not in_fresh_zone and not in_anchor_zone:
+    if not in_fresh_zone and not in_anchor_zone: 
         zone_ref = fresh_fib["fib500"] if fresh_fib else (anchor_fib["fib500"] if anchor_fib else 0)
         log("❌ REJECT: " + ("PREMIUM ZONE" if price > zone_ref else "EXTREME (di luar range)"))
         return None
@@ -553,7 +619,7 @@ def analyze_smc_pa(sym, verbose=True):
         fib_500    = fresh_fib["fib500"]
         fib_618    = fresh_fib["fib618"]
         fib_786    = fresh_fib["fib786"]
-        log(f"⚡ FIBO INTRADAY: ${fmt(price)} dalam FRESH ZONE [{fmt(fib_786)} - {fmt(fib_500)}]"
+        log(f"⚡ FIBO INTRADAY: ${fmt(price)} dalam FRESH ZONE [{fmt(fib_786)} - {fmt(fib_500)}] "
             f" | SL={fmt(swing_low)} SH={fmt(swing_high)} | range {rng/swing_low*100:.1f}%")
     elif in_anchor_zone and anchor_fib:
         setup_mode = "SWING"
@@ -563,7 +629,7 @@ def analyze_smc_pa(sym, verbose=True):
         fib_500    = anchor_fib["fib500"]
         fib_618    = anchor_fib["fib618"]
         fib_786    = anchor_fib["fib786"]
-        log(f"⚖️ FIBO SWING: ${fmt(price)} dalam ANCHOR ZONE [{fmt(fib_786)} - {fmt(fib_500)}]"
+        log(f"⚖️ FIBO SWING: ${fmt(price)} dalam ANCHOR ZONE [{fmt(fib_786)} - {fmt(fib_500)}] "
             f" | SL={fmt(swing_low)} SH={fmt(swing_high)} | range {rng/swing_low*100:.1f}%")
     else:
         # Fallback: fresh == anchor (single pair)
@@ -605,7 +671,7 @@ def analyze_smc_pa(sym, verbose=True):
     # 8. VPA IMPULSE vs PULLBACK
     impulse_vols  = [c['v'] for c in candles[-20:] if c['c'] > c['o']]
     pullback_vols = [c['v'] for c in candles[-20:] if c['c'] < c['o']]
-    avg_impulse_vol  = sum(impulse_vols)  / len(impulse_vols)  if impulse_vols  else 1
+    avg_impulse_vol  = sum(impulse_vols) / len(impulse_vols) if impulse_vols else 1
     avg_pullback_vol = sum(pullback_vols) / len(pullback_vols) if pullback_vols else 1
     curr_vol = curr['v']
     vpa_dry  = avg_pullback_vol < (avg_impulse_vol * 0.7)
@@ -669,7 +735,7 @@ def analyze_smc_pa(sym, verbose=True):
                         if touches_after <= 1:
                             # [FIX-13] OB dalam golden zone (50–61.8%) = premium OB
                             ob_in_golden = fib_618 <= (ob_high + ob_low) / 2 <= fib_500
-                            if not setup_name: setup_name = "🧱 FRESH ORDER BLOCK" + (" [GOLDEN]" if ob_in_golden else "")
+                            if not setup_name: setup_name = "🧱 FRESH ORDER BLOCK" + (" [GOLDEN]" if ob_in_golden else " ")
                             score += 3 if ob_in_golden else 2
                             log(f"✅ SETUP 3: Fresh OB {'[GOLDEN ZONE]' if ob_in_golden else 'detected'}")
                             break
@@ -689,7 +755,7 @@ def analyze_smc_pa(sym, verbose=True):
                     score += 3
                     if not setup_name:
                         setup_name = "🕳️ M15 FVG ZONE"
-                    log(f"✅ SETUP 8: M15 FVG dalam H1 discount ({fmt(fvg['bottom'])}-{fmt(fvg['top'])}, "
+                    log(f"✅ SETUP 8: M15 FVG dalam H1 discount ({fmt(fvg['bottom'])}-{fmt(fvg['top'])},  "
                         f"{fvg['size_pct']:.2f}%, {fvg['candles_ago']} M15 candle lalu)")
                     break
     except Exception:
@@ -700,18 +766,13 @@ def analyze_smc_pa(sym, verbose=True):
         return None
 
     # ─────────────────────────────────────────────────────────────
-    # [FIX-1] SL: ATR + Fib78.6% COMBO
-    #   Formula: SL = fib_786 - (ATR × 1.0)
-    #   Logik: Fib78.6% = tahap pullback paling dalam yang masih valid.
-    #          ATR×1.0 = buffer untuk noise pasaran semasa timeframe H1.
-    #          Fallback: ambil yang lebih rendah antara fib anchor dan candle low.
+    # [NOVA7-RISK] SL/TP Calculation — Institutional Grade
+    #   SL: compute_final_sl() — ATR + structure low combo
+    #   TP: Fibonacci Extensions (kekalkan logik asal)
     # ─────────────────────────────────────────────────────────────
-    atr_buffer  = atr * 1.0 if atr > 0 else price * 0.015
-    sl_fib      = fib_786 - atr_buffer            # Anchor = Fib78.6% - ATR
-    sl_candle   = min(curr['l'], swing_low) * 0.995  # Price-based floor
-    sl          = min(sl_fib, sl_candle)           # Ambil yang lebih konservatif
+    sl = compute_final_sl(price, swing_low, atr, atr_mult=1.0, max_sl_pct=0.08)
 
-    # TP: Fibonacci Extensions — logik sedia ada sudah betul, kekalkan
+    # TP: Fibonacci Extensions
     tp1 = swing_high                    # 100% measured move
     tp2 = swing_low + (rng * 1.618)     # 161.8% Fib extension
     tp3 = swing_low + (rng * 2.618)     # 261.8% Fib extension
@@ -721,9 +782,8 @@ def analyze_smc_pa(sym, verbose=True):
         tp1 = min(tp1, h4_swing_high)
         tp2 = min(tp2, h4_swing_high)
         tp3 = min(tp3, h4_swing_high)
-        # [FIX-10] Pastikan TP masih berbeza selepas capping
         if tp1 == tp2 == tp3:
-            log("❌ REJECT: Counter-trend TP semua sama selepas cap — tidak layak")
+            log("❌ REJECT: Counter-trend TP semua sama selepas cap")
             return None
         log("⚠️ COUNTER-TREND: TP capped at H4 Swing High")
 
@@ -732,16 +792,14 @@ def analyze_smc_pa(sym, verbose=True):
         log("❌ REJECT: Risk invalid (sl >= entry)")
         return None
 
-    # [FIX-9] Validasi TP ordering
+    # Validasi TP ordering
     if tp1 <= price:
         log(f"❌ REJECT: TP1 ({fmt(tp1)}) <= entry ({fmt(price)})")
         return None
     if tp2 <= tp1:
-        log(f"⚠️ TP2 <= TP1, adjust TP2 = TP1 + ATR")
-        tp2 = tp1 + atr_buffer
+        tp2 = tp1 + atr
     if tp3 <= tp2:
-        log(f"⚠️ TP3 <= TP2, adjust TP3 = TP2 + ATR*2")
-        tp3 = tp2 + atr_buffer * 2
+        tp3 = tp2 + atr * 2
 
     rr1 = (tp1 - price) / risk
     rr2 = (tp2 - price) / risk
@@ -772,21 +830,27 @@ def analyze_smc_pa(sym, verbose=True):
 
     return {
         "setup": f"{setup_name} ({'⚡INTRADAY' if setup_mode == 'INTRADAY' else '⚖️SWING'})",
-        "entry": price, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "rr1": round(rr1, 2), "rr2": round(rr2, 2), "score": score,
+        "entry": price,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr1": round(rr1, 2),
+        "rr2": round(rr2, 2),
+        "score": score,
         "fib_zone": fib_zone,
         "fib_500": fib_500,   # [FIX-7]
         "fib_618": fib_618,   # [FIX-7]
         "fib_786": fib_786,   # [FIX-7]
         "timeframe": "H1",
         "setup_mode": setup_mode,          # "INTRADAY" atau "SWING"
-        "structure": structure, "is_counter_trend": is_counter_trend
+        "structure": structure,
+        "is_counter_trend": is_counter_trend
     }
 
-# =================================================================
+# ==========================================
 # 5. ENGINE 2: EARLY MOMENTUM (M15) — VOLUME ANOMALY
-# =================================================================
+# ==========================================
 def analyze_early_momentum(sym, verbose=True):
     log = lambda msg: print(f"[{sym}-M15] {msg}") if verbose else None
     candles = get_gateio_klines(sym, "15m", 100)
@@ -826,17 +890,13 @@ def analyze_early_momentum(sym, verbose=True):
     entry      = price
 
     # ─────────────────────────────────────────────────────────────
-    # [FIX-2] SL/TP Engine 2: ATR + Fibonacci Ratios
-    #   SL  = min_low_range - (ATR × 0.75)
-    #   TP1 = range_high + (ATR × 0.5)      ← first resistance with noise room
-    #   TP2 = entry + risk × 2.618           ← Fib ratio (golden extension)
-    #   TP3 = entry + risk × 4.236           ← Fib ratio (2.618 + 1.618)
+    # [NOVA7-RISK] SL/TP Calculation — Institutional Grade
     # ─────────────────────────────────────────────────────────────
-    atr_m15     = calculate_atr(candles, 14)
-    range_low   = min(lows[-20:])
-    range_high  = max(highs[-50:])
+    atr_m15 = calculate_atr(candles, 14)
+    range_low = min(lows[-20:])
+    range_high = max(highs[-50:])
 
-    sl = (range_low - atr_m15 * 0.75) if atr_m15 > 0 else range_low * 0.99
+    sl = compute_final_sl(entry, range_low, atr_m15, atr_mult=0.75, max_sl_pct=0.08)
 
     risk = entry - sl
     if risk <= 0:
@@ -857,7 +917,7 @@ def analyze_early_momentum(sym, verbose=True):
         if len(candles_h4) >= 20:
             # BETUL: Guna semua 50 candles untuk EMA20 yang tepat
             h4_closes = [c['c'] for c in candles_h4]
-            h4_ema    = calculate_ema(h4_closes, 20)     # [FIX-3]
+            h4_ema    = calculate_ema(h4_closes, 20)     # [FIX-3] 
             h4_current = candles_h4[-1]['c']
             h4_bias    = "uptrend" if h4_current > h4_ema else "downtrend"
     except Exception:
@@ -880,17 +940,26 @@ def analyze_early_momentum(sym, verbose=True):
     log(f"⚡ MOMENTUM: {setup_name} | H4: {h4_bias} | RR1:{rr1:.2f}")
 
     return {
-        "setup": setup_name, "entry": entry, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "rr1": round(rr1, 2), "rr2": round(rr2, 2), "score": 3,
-        "fib_zone": "N/A", "timeframe": "M15",
-        "vol_spike": vol_spike, "range_pct": range_pct,
-        "h4_bias": h4_bias, "is_counter_trend": (h4_bias == "downtrend")
+        "setup": setup_name,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "rr1": round(rr1, 2),
+        "rr2": round(rr2, 2),
+        "score": 3,
+        "fib_zone": "N/A",
+        "timeframe": "M15",
+        "vol_spike": vol_spike,
+        "range_pct": range_pct,
+        "h4_bias": h4_bias,
+        "is_counter_trend": (h4_bias == "downtrend")
     }
 
-# =================================================================
+# ==========================================
 # 6. SIGNAL GENERATOR
-# =================================================================
+# ==========================================
 def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     cfg   = get_config()
     entry = smc_data["entry"]
@@ -898,56 +967,31 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     tp1, tp2, tp3 = smc_data["tp1"], smc_data["tp2"], smc_data["tp3"]
     timeframe     = smc_data.get("timeframe", "H1")
     risk          = entry - sl
-
+    
     if smc_data["score"] < cfg["score_pass"]:
         return False
 
-    # [FIX-20] GEOMETRIC VALIDATION: Reject if SL risk > 1.5× swing range
-    # Berlaku bila range kecil tapi ATR besar — score tinggi tidak justify geometric flaw
-    swing_rng = smc_data.get("tp1", entry) - smc_data.get("sl", entry)  # approximate swing range from TP1-SL
-    # More accurate: use fib_500 - fib_786 as discount zone width
-    fib500 = smc_data.get("fib_500", 0)
-    fib786 = smc_data.get("fib_786", 0)
-    if fib500 > 0 and fib786 > 0:
-        discount_width = fib500 - fib786
-        if discount_width > 0 and risk > 0:
-            risk_to_range = risk / (discount_width / 0.286)  # normalize to full swing range
-            if risk_to_range > 1.5:
-                print(f"[SKIP] {sym}: Geometric flaw — Risk {fmt(risk)} = {risk_to_range:.1f}× swing range. ATR terlalu besar untuk range ini.")
-                return False
+    # ─────────────────────────────────────────────────────────────
+    # [NOVA7-RISK] Position Sizing & Risk Management
+    # ─────────────────────────────────────────────────────────────
+    # Ambil modal pengguna (default $50 jika belum set)
+    user_cap, user_risk = get_user_capital(int(ADMIN_ID) if ADMIN_ID else 0)
 
-    # [FIX-8] MINIMUM RR FILTER dengan [FIX-18] TP PROMOTION untuk setup berkualiti
-    rr1  = (tp1 - entry) / risk if risk > 0 else 0
-    rr_tp2 = (tp2 - entry) / risk if risk > 0 else 0
-    rr_tp3 = (tp3 - entry) / risk if risk > 0 else 0
-    score  = smc_data.get("score", 0)
+    # Kira position size dengan double cap
+    pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, entry, sl)
 
+    # Validasi: jika position size 0, skip
+    if pos_usd <= 0 or pos_coins <= 0:
+        print(f"[SKIP] {sym}: Position size invalid (pos_usd={pos_usd}, pos_coins={pos_coins})")
+        return False
+
+    # Minimum RR filter (kekalkan dari Alpha)
+    rr1 = (tp1 - entry) / risk if risk > 0 else 0
     if rr1 < 1.5:
-        # [FIX-18] Cuba promote TP untuk setup score >= 4
-        promoted = False
-        if score >= 4 and risk > 0:
-            if rr_tp2 >= 1.5:
-                # TP2 promoted jadi TP1 — masih Fib extension yang valid
-                print(f"[PROMOTE] {sym}: RR1={rr1:.2f}→{rr_tp2:.2f} | TP2→TP1 (score={score})")
-                tp3 = entry + (tp3 - entry) * 1.3   # extend TP3 further
-                tp2 = smc_data["tp3"]                # old TP3 jadi TP2
-                tp1 = smc_data["tp2"]                # old TP2 jadi TP1
-                rr1 = rr_tp2
-                promoted = True
-            elif rr_tp3 >= 1.5 and score >= 5:
-                # Double promote untuk setup score sangat tinggi
-                print(f"[PROMOTE×2] {sym}: RR1={rr1:.2f}→{rr_tp3:.2f} | TP3→TP1 (score={score})")
-                tp1 = smc_data["tp3"]
-                tp2 = entry + (smc_data["tp3"] - entry) * 1.4
-                tp3 = entry + (smc_data["tp3"] - entry) * 1.8
-                rr1 = rr_tp3
-                promoted = True
+        print(f"[SKIP] {sym}: RR1={rr1:.2f} < 1.5 — tidak layak")
+        return False
 
-        if not promoted:
-            print(f"[SKIP] {sym}: RR1={rr1:.2f} | TP2 RR:{rr_tp2:.2f} | TP3 RR:{rr_tp3:.2f} — tiada TP yang mencukupi (min 1.5)")
-            return False
-
-    # [FIX-9] Validate SL/TP ordering sebelum hantar
+    # Validasi SL/TP ordering
     if sl >= entry:
         print(f"[SKIP] {sym}: SL ({fmt(sl)}) >= entry ({fmt(entry)}) — invalid")
         return False
@@ -959,7 +1003,7 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     if current_price > 0:
         price_gap = abs(current_price - entry) / entry * 100
         if price_gap > 1.0:
-            mode = smc_data.get("setup_mode", "")
+            mode = smc_data.get("setup_mode", " ")
             print(f"[INFO] {sym}: Price bergerak {price_gap:.1f}% dari H1 entry ({fmt(entry)}) — signal diteruskan ({mode})")
         # Jika price dah bergerak SANGAT jauh (>15%), tambah ke pullback watchlist sahaja
         if price_gap > 15.0:
@@ -971,10 +1015,10 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     sl_pct  = (entry - sl)   / entry * 100
     tp1_pct = (tp1 - entry)  / entry * 100
     tp2_pct = (tp2 - entry)  / entry * 100
-    tp3_pct = (tp3 - entry)  / entry * 100
+    tp3_pct = (tp3 - entry)  / entry * 100 
     rr2     = (tp2 - entry)  / risk if risk > 0 else 0
 
-    btc_warn = f"⚠️ <b>BTC ALERT: </b> BTC {btc_chg:+.2f}%\n\n" if btc_chg < -4.0 else ""
+    btc_warn = f"⚠️ <b>BTC ALERT:</b> BTC {btc_chg:+.2f}%\n\n" if btc_chg < -4.0 else ""
 
     pair_name    = f"{sym}USDT"
     engine_icon  = "⚡" if timeframe == "M15" else "🏴‍☠️"
@@ -995,28 +1039,41 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
         f"📋 <code>{pair_name}</code>\n\n"
         f"{btc_warn}"
         f"{counter_trend_badge}"
-        f"💰 <b>Entry: </b> <code>${fmt(entry)}</code>\n"
-        f"📊 <b>Vol24H: </b> <code>${vol_24h/1e6:.2f}M</code>\n\n"
-        f"🛑 <b>SL: </b> <code>${fmt(sl)}</code> <i>(-{sl_pct:.1f}%)</i>\n"
-        f"📈 <b>TP1: </b> <code>${fmt(tp1)}</code> <i>(+{tp1_pct:.1f}%) [RR {rr1:.1f}]</i>\n"
-        f"📈 <b>TP2: </b> <code>${fmt(tp2)}</code> <i>(+{tp2_pct:.1f}%) [RR {rr2:.1f}]</i>\n"
-        f"📈 <b>TP3: </b> <code>${fmt(tp3)}</code> <i>(+{tp3_pct:.1f}%)</i>\n\n"
-        f"🧠 <b>Setup: </b> <code>{smc_data['setup']}</code>\n"
-        f"⏱️ <b>TF: </b> <code>{timeframe}</code> | <b>Score: </b> <code>{smc_data['score']}/{cfg['score_pass']}</code>"
+        f"💰 <b>Entry:</b> <code>${fmt(entry)}</code>\n"
+        f"📊 <b>Vol24H:</b> <code>${vol_24h/1e6:.2f}M</code>\n\n"
+        f"🛑 <b>SL:</b> <code>${fmt(sl)}</code> <i>(-{sl_pct:.1f}%)</i>\n"
+        f"📈 <b>TP1:</b> <code>${fmt(tp1)}</code> <i>(+{tp1_pct:.1f}%) [RR {rr1:.1f}]</i>\n"
+        f"📈 <b>TP2:</b> <code>${fmt(tp2)}</code> <i>(+{tp2_pct:.1f}%) [RR {rr2:.1f}]</i>\n"
+        f"📈 <b>TP3:</b> <code>${fmt(tp3)}</code> <i>(+{tp3_pct:.1f}%)</i>\n\n"
+        f"💼 <b>Position Size:</b> <code>${pos_usd:.2f}</code> ({pos_coins:.4f} {sym})\n"
+        f"⚠️ <b>Risk:</b> <code>${risk_usd:.2f}</code> ({user_risk}% of ${user_cap:.2f})\n\n"
+        f"🧠 <b>Setup:</b> <code>{smc_data['setup']}</code>\n"
+        f"⏱️ <b>TF:</b> <code>{timeframe}</code> | <b>Score:</b> <code>{smc_data['score']}/{cfg['score_pass']}</code>"
     )
 
     if timeframe == "M15" and "vol_spike" in smc_data:
-        msg += f"\n⚡ <b>Vol Spike: </b> <code>{smc_data['vol_spike']:.1f}x Avg</code>"
+        msg += f"\n⚡ <b>Vol Spike:</b> <code>{smc_data['vol_spike']:.1f}x Avg</code>"
 
     try:
         sent = bot.send_message(VIP_CHANNEL_ID, msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         record = {
-            "contract": sym, "symbol": sym, "network": "GATEIO",
-            "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
-            "rr1": round(rr1, 2), "rr2": round(rr2, 2),
-            "setup": smc_data["setup"], "fibo_zone": smc_data.get("fib_zone", "N/A"),
-            "score": smc_data["score"], "volume_24h": vol_24h,
-            "timeframe": timeframe, "msg_id": sent.message_id, "sent_at": int(time.time())
+            "contract": sym,
+            "symbol": sym,
+            "network": "GATEIO",
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "rr1": round(rr1, 2),
+            "rr2": round(rr2, 2),
+            "setup": smc_data["setup"],
+            "fibo_zone": smc_data.get("fib_zone", "N/A"),
+            "score": smc_data["score"],
+            "volume_24h": vol_24h,
+            "timeframe": timeframe,
+            "msg_id": sent.message_id,
+            "sent_at": int(time.time())
         }
         save_signal(record)
         add_cooldown(sym)
@@ -1026,9 +1083,9 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
         alert_admin(f"Gagal hantar signal {sym}: {e}")
         return False
 
-# =================================================================
+# ==========================================
 # 7. SCANNER & TRADE MONITOR
-# =================================================================
+# ==========================================
 IS_SCANNING = True
 WATCHLIST            = {}
 WATCHLIST_TIMEOUT    = 900          # M15 momentum: 15 minit (pattern cepat)
@@ -1048,7 +1105,7 @@ def add_pullback_watchlist(sym, smc_data):
             "added":    time.time(),
             "setup":    smc_data["setup"]
         }
-    print(f"[{sym}] 📌 MASUK PULLBACK WATCHLIST: Fib zone {fmt(smc_data.get('fib_786', smc_data['sl']))} - {fmt(smc_data['entry'])}")
+        print(f"[{sym}] 📌 MASUK PULLBACK WATCHLIST: Fib zone {fmt(smc_data.get('fib_786', smc_data['sl']))} - {fmt(smc_data['entry'])}")
 
 def scan_once():
     global IS_SCANNING_ACTIVE
@@ -1058,7 +1115,7 @@ def scan_once():
             print("[SCAN] ⏭️ Scan sedang berjalan, skip cycle ini")
             return
         IS_SCANNING_ACTIVE = True
-
+    
     try:
         if not IS_SCANNING:
             return
@@ -1141,6 +1198,7 @@ def scan_once():
                         range_high  = max(highs)
                         range_low   = min(lows)
                         total_range = range_high - range_low
+                        
                         if curr['c'] < range_low + (total_range * 0.75):
                             with _watchlist_lock:
                                 if sym in WATCHLIST: del WATCHLIST[sym]
@@ -1148,6 +1206,7 @@ def scan_once():
 
                         recent_highs = [c['h'] for c in candles_m15[-20:-1]]
                         local_lh     = max(recent_highs) if recent_highs else range_high
+                        
                         if curr['c'] <= local_lh:
                             with _watchlist_lock:
                                 if sym in WATCHLIST: del WATCHLIST[sym]
@@ -1162,11 +1221,10 @@ def scan_once():
 
                         if range_pct <= 5 and (is_pinbar or is_engulfing):
                             # ─────────────────────────────────────────────
-                            # [FIX-11] M15 inline SL/TP: ATR + Fib ratios
+                            # [NOVA7-RISK] M15 inline SL/TP: ATR + compute_final_sl
                             # ─────────────────────────────────────────────
                             atr_m15   = calculate_atr(candles_m15, 14)
-                            sl_m15    = (min(lows[-20:]) - atr_m15 * 0.75
-                                         if atr_m15 > 0 else min(lows[-20:]) * 0.99)
+                            sl_m15    = compute_final_sl(curr['c'], min(lows[-20:]), atr_m15, atr_mult=0.75, max_sl_pct=0.08)
                             risk_m15  = curr['c'] - sl_m15
                             if risk_m15 <= 0:
                                 continue
@@ -1177,7 +1235,7 @@ def scan_once():
                             tp3_m15   = max(tp2_m15 * 1.005, tp3_m15)
 
                             smc_m15 = {
-                                "setup":             "⚡ PINBAR MOMENTUM" if is_pinbar else "⚡ ENGULFING MOMENTUM",
+                                "setup":              "⚡ PINBAR MOMENTUM" if is_pinbar else "⚡ ENGULFING MOMENTUM",
                                 "entry":             curr['c'],
                                 "sl":                sl_m15,
                                 "tp1":               tp1_m15,
@@ -1186,8 +1244,8 @@ def scan_once():
                                 "rr1":               round((tp1_m15 - curr['c']) / risk_m15, 2),
                                 "rr2":               round((tp2_m15 - curr['c']) / risk_m15, 2),
                                 "score":             3,
-                                "fib_zone":          "N/A",
-                                "timeframe":         "M15",
+                                "fib_zone":           "N/A",
+                                "timeframe":          "M15",
                                 "vol_spike":         curr_vol / avg_vol,
                                 "range_pct":         range_pct,
                                 "is_counter_trend":  False
@@ -1255,7 +1313,7 @@ def monitor_active_trades():
 
             if cp >= trade["tp3"] and not trade.get("tp3_hit"):
                 updates["tp3_hit"] = True
-                updates["closed"]  = True
+                updates["closed"] = True
                 profit_pct = (cp - entry_price) / entry_price * 100
                 notify(
                     f"🏆 <b>TP3 MOONSHOT!</b>\n"
@@ -1264,8 +1322,8 @@ def monitor_active_trades():
                 )
 
             elif cp <= trade["sl"] and not trade.get("sl_hit"):
-                updates["sl_hit"]  = True
-                updates["closed"]  = True
+                updates["sl_hit"] = True
+                updates["closed"] = True
                 loss_pct = (cp - entry_price) / entry_price * 100
                 notify(
                     f"❌ <b>SL HIT</b>\n"
@@ -1280,9 +1338,9 @@ def monitor_active_trades():
         except Exception as e:
             print(f"[MONITOR] {sym}: {e}")
 
-# =================================================================
+# ==========================================
 # 8. TELEGRAM COMMANDS
-# =================================================================
+# ==========================================
 @bot.message_handler(commands=["start", "menu"])
 def cmd_start(msg):
     if str(msg.chat.id) != str(ADMIN_ID):
@@ -1292,16 +1350,16 @@ def cmd_start(msg):
     uptime_m  = int((time.time() - START_TIME) / 60)
     preset_lbl = PRESETS.get(cfg.get("active_preset", "standard"), {}).get("label", "Custom")
     text = (
-        f"🏴☠️ <b>ALPHA — Dual Engine Sniper</b>\n"
+        f"🏴‍☠️ <b>ALPHA — Dual Engine Sniper</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f" Uptime  : <code>{uptime_m}m</code>\n"
-        f" Trade   : <code>{len(active)} aktif</code>\n"
+        f"⏱️ Uptime  : <code>{uptime_m}m</code>\n"
+        f"💼 Trade   : <code>{len(active)} aktif</code>\n"
         f"🔧 Scan   : <code>{'✅ AKTIF' if IS_SCANNING else '⛔ STOP'}</code>\n\n"
-        f"⚡ <b>Scan Mode: </b> <code>{SCAN_MODE.upper()}</code>\n"
-        f"🎛️ <b>Preset: </b> <code>{preset_lbl}</code>\n\n"
-        f" <b>🏴‍☠️ Engine 1 — Pullback (H1+H4):</b>\n"
+        f"⚡ <b>Scan Mode:</b> <code>{SCAN_MODE.upper()}</code>\n"
+        f"🎛️ <b>Preset:</b> <code>{preset_lbl}</code>\n\n"
+        f"<b>🏴‍️ Engine 1 — Pullback (H1+H4):</b>\n"
         f"Fractal Swing | EMA | ATR+Fib SL | Fib Ext TP\n\n"
-        f" <b>⚡ Engine 2 — Momentum (M15):</b>\n"
+        f"<b>⚡ Engine 2 — Momentum (M15):</b>\n"
         f"Volume Anomaly | ATR+Fib SL | Fib Ratio TP"
     )
     kb = InlineKeyboardMarkup(row_width=3)
@@ -1382,7 +1440,7 @@ def cmd_tune(msg):
         active = get_config().get("active_preset", "standard")
         text = (
             f"🎛️ <b>TUNE PRESET</b>\n\n"
-            f"<b>Aktif: </b> {PRESETS[active]['label']}\n\n"
+            f"<b>Aktif:</b> {PRESETS[active]['label']}\n\n"
             f"🟢 <code>/tune soft</code>     — Vol $500K, Pass 2\n"
             f"🟡 <code>/tune standard</code> — Vol $1M, Pass 3\n"
             f"🔴 <code>/tune hard</code>     — Vol $2.5M, Pass 4"
@@ -1424,7 +1482,7 @@ def cmd_pair(msg):
         smc_m15 = analyze_early_momentum(sym, verbose=False)
         if smc_h1:
             bot.send_message(msg.chat.id,
-                f"🏴‍☠️ <b>{sym} — PULLBACK (H1)</b>\n"
+                f"🏴‍️ <b>{sym} — PULLBACK (H1)</b>\n"
                 f"Setup: <code>{smc_h1['setup']}</code>\n"
                 f"Score: <code>{smc_h1['score']}</code>\n"
                 f"RR1: <code>{smc_h1.get('rr1', 0):.2f}</code>\n"
@@ -1479,6 +1537,33 @@ def cmd_journal(msg):
         return
     bot.reply_to(msg, generate_journal(), parse_mode="HTML")
 
+@bot.message_handler(commands=["modal"])
+def cmd_modal(msg):
+    if str(msg.chat.id) != str(ADMIN_ID):
+        return
+    args = msg.text.split()
+    if len(args) < 2:
+        cap, risk = get_user_capital(int(ADMIN_ID))
+        bot.reply_to(msg, 
+            f"💼 <b>Modal Semasa:</b> ${cap:,.2f}\n"
+            f"⚠️ <b>Risk:</b> {risk}%\n\n"
+            f"Cara set: <code>/modal 1000</code>", 
+            parse_mode="HTML")
+        return
+    try:
+        new_cap = float(args[1])
+        if new_cap < 10:
+            bot.reply_to(msg, "⚠️ Minimum modal: $10", parse_mode="HTML")
+            return
+        set_user_capital(int(ADMIN_ID), new_cap)
+        bot.reply_to(msg, 
+            f"✅ <b>Modal Dikemas Kini:</b> ${new_cap:,.2f}\n"
+            f"Risk default: 2% (${new_cap * 0.02:,.2f} per trade)\n"
+            f"Max position: 50% modal (${new_cap * 0.50:,.2f})", 
+            parse_mode="HTML")
+    except ValueError:
+        bot.reply_to(msg, "️ Format: <code>/modal 1000</code>", parse_mode="HTML")
+
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
     if str(msg.chat.id) != str(ADMIN_ID):
@@ -1491,16 +1576,18 @@ def cmd_help(msg):
         "/journal        — Laporan 7 hari\n"
         "/status         — Status semasa\n"
         "/mode [MODE]    — Tukar scan mode\n"
-        "/tune [PRESET]  — Tukar preset"
+        "/tune [PRESET]  — Tukar preset\n"
+        "/modal [AMOUNT] — Set modal trading"
     ), parse_mode="HTML")
 
-# =================================================================
+# ==========================================
 # 9. JOURNAL
-# =================================================================
+# ==========================================
 def generate_journal():
     trades = get_signals_since(7)
     if not trades:
         return "📓 <b>JOURNAL (7D)</b>\n\nTiada signal dalam 7 hari lepas."
+    
     total  = len(trades)
     tp1_n  = sum(1 for t in trades if t.get("tp1_hit"))
     tp2_n  = sum(1 for t in trades if t.get("tp2_hit"))
@@ -1523,20 +1610,21 @@ def generate_journal():
         f"├ TP3 Moonshot : <code>{tp3_n}</code>\n"
         f"├ SL Hit       : <code>{sl_n}</code>\n"
         f"└ Masih Buka   : <code>{open_n}</code>\n\n"
-        f"<b>🧠 Setup Breakdown: </b>\n<code>{setup_str}</code>"
+        f"<b>🧠 Setup Breakdown:</b>\n<code>{setup_str}</code>"
     )
 
-# =================================================================
+# ==========================================
 # 10. PULLBACK & BOS MONITORS
-# =================================================================
+# ==========================================
 def monitor_pullback_watchlist():
     if not IS_SCANNING or not PULLBACK_WATCHLIST:
         return
     with _watchlist_lock:
         items = list(PULLBACK_WATCHLIST.items())
+    
     print(f"\n[PULLBACK MONITOR] Checking {len(items)} coins... (timeout: 8h)")
     symbols_to_remove = []
-
+    
     for sym, data in items:
         try:
             elapsed_hours = (time.time() - data["added"]) / 3600
@@ -1576,12 +1664,13 @@ def monitor_pullback_watchlist():
 
             if is_pinbar or is_engulfing:
                 atr_m5    = calculate_atr(candles_m5, 14)
-                sl_m5     = data["fib_786"] - (atr_m5 * 0.75 if atr_m5 > 0 else data["fib_786"] * 0.01)
+                # [NOVA7-RISK] Guna compute_final_sl
+                sl_m5     = compute_final_sl(curr['c'], data["fib_786"], atr_m5, atr_mult=0.75, max_sl_pct=0.08)
                 risk_m5   = curr['c'] - sl_m5
                 if risk_m5 <= 0:
                     continue
                 smc_pullback = {
-                    "setup":            "🔄 PULLBACK RECOVERY (M5)",
+                    "setup":             "🔄 PULLBACK RECOVERY (M5)",
                     "entry":            curr['c'],
                     "sl":               sl_m5,
                     "tp1":              data["entry"],
@@ -1590,8 +1679,8 @@ def monitor_pullback_watchlist():
                     "rr1":              round((data["entry"] - curr['c']) / risk_m5, 2),
                     "rr2":              round((data["fib_500"] - curr['c']) / risk_m5, 2),
                     "score":            4,
-                    "fib_zone":         "N/A",
-                    "timeframe":        "M5",
+                    "fib_zone":          "N/A",
+                    "timeframe":         "M5",
                     "is_counter_trend": False
                 }
                 if send_signal(sym, smc_pullback, 0, btc_chg=0.0):
@@ -1609,9 +1698,10 @@ def monitor_bos_breaks():
         return
     with _watchlist_lock:
         items = list(BOS_WATCHLIST.items())
+    
     print(f"\n[BOS MONITOR] Checking {len(items)} pending BOS... (timeout: 8h)")
     symbols_to_remove = []
-
+    
     for sym, data in items:
         try:
             elapsed_hours = (time.time() - data["added"]) / 3600
@@ -1654,20 +1744,25 @@ def monitor_bos_breaks():
 
                         if is_pinbar or is_engulfing:
                             atr_m15  = calculate_atr(candles_m15, 14)
-                            sl_hold  = level - (atr_m15 * 1.0 if atr_m15 > 0 else level * 0.01)
+                            # [NOVA7-RISK] Guna compute_final_sl
+                            sl_hold  = compute_final_sl(current_price, level, atr_m15, atr_mult=1.0, max_sl_pct=0.08)
                             risk_hold = current_price - sl_hold
                             if risk_hold > 0:
                                 print(f"[{sym}] 🏗️ HL HOLD! ${fmt(level)} dijaga @ ${fmt(current_price)} ({elapsed_hours:.1f}h)")
                                 pattern = "Pinbar" if is_pinbar else "Engulfing"
                                 smc_hold = {
                                     "setup": f"🏗️ HL HOLD — {pattern} (M15)",
-                                    "entry": current_price, "sl": sl_hold,
+                                    "entry": current_price,
+                                    "sl": sl_hold,
                                     "tp1":   current_price + risk_hold * 1.618,
                                     "tp2":   current_price + risk_hold * 2.618,
                                     "tp3":   current_price + risk_hold * 4.236,
-                                    "rr1":   1.618, "rr2": 2.618,
-                                    "score": 4, "fib_zone": "N/A",
-                                    "timeframe": "M15", "is_counter_trend": False,
+                                    "rr1":   1.618,
+                                    "rr2":   2.618,
+                                    "score": 4,
+                                    "fib_zone": "N/A",
+                                    "timeframe": "M15",
+                                    "is_counter_trend": False,
                                     "fib_500": current_price + risk_hold * 2.618,
                                     "fib_786": sl_hold
                                 }
@@ -1679,19 +1774,25 @@ def monitor_bos_breaks():
                 print(f"[{sym}] 💥 BOS BREAK! LH ${fmt(level)} ditembusi @ ${fmt(current_price)} ({elapsed_hours:.1f}h)")
                 candles_m5 = get_gateio_klines(sym, "5m", 30)
                 atr_bos    = calculate_atr(candles_m5, 14) if len(candles_m5) >= 15 else current_price * 0.015
-                sl_bos     = level * 0.98 - atr_bos
+                # [NOVA7-RISK] Guna compute_final_sl
+                sl_bos     = compute_final_sl(current_price, level * 0.98, atr_bos, atr_mult=1.0, max_sl_pct=0.08)
                 risk_bos   = current_price - sl_bos
                 if risk_bos <= 0:
                     symbols_to_remove.append(sym)
                     continue
                 smc_bos = {
-                    "setup": "💥 BOS BREAK (LH Tembus - Bullish)", "entry": current_price,
-                    "sl":  sl_bos,
+                    "setup": "💥 BOS BREAK (LH Tembus - Bullish)",
+                    "entry": current_price,
+                    "sl": sl_bos,
                     "tp1": current_price + risk_bos * 1.618,
                     "tp2": current_price + risk_bos * 2.618,
                     "tp3": current_price + risk_bos * 4.236,
-                    "rr1": 1.618, "rr2": 2.618, "score": 4, "fib_zone": "N/A",
-                    "timeframe": "M5", "is_counter_trend": False
+                    "rr1": 1.618,
+                    "rr2": 2.618,
+                    "score": 4,
+                    "fib_zone": "N/A",
+                    "timeframe": "M5",
+                    "is_counter_trend": False
                 }
                 if send_signal(sym, smc_bos, 0, btc_chg=0.0):
                     symbols_to_remove.append(sym)
@@ -1707,7 +1808,7 @@ def fast_track_watchlist():
     # Cleanup old WATCHLIST entries (15 min timeout)
     with _watchlist_lock:
         now = time.time()
-        to_remove = [sym for sym, added_time in WATCHLIST.items() 
+        to_remove = [sym for sym, added_time in WATCHLIST.items()
                      if now - added_time > WATCHLIST_TIMEOUT]
         for sym in to_remove:
             del WATCHLIST[sym]
@@ -1717,13 +1818,14 @@ def fast_track_watchlist():
     monitor_pullback_watchlist()
     monitor_bos_breaks()
 
-# =================================================================
+# ==========================================
 # 11. SCHEDULER & MAIN
-# =================================================================
+# ==========================================
 def run_scheduler():
     schedule.every(5).minutes.do(lambda: threading.Thread(target=scan_once, daemon=True).start())
     schedule.every(5).minutes.do(lambda: threading.Thread(target=monitor_active_trades, daemon=True).start())
     schedule.every(30).seconds.do(lambda: threading.Thread(target=fast_track_watchlist, daemon=True).start())
+    
     while True:
         schedule.run_pending()
         time.sleep(1)
@@ -1732,11 +1834,13 @@ class RenderHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ALPHA DUAL ENGINE v14 ACTIVE")
+        self.wfile.write(b"ALPHA DUAL ENGINE v14.5 [NOVA7 RISK MGMT] ACTIVE")
+    
     def do_HEAD(self):
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
+    
     def log_message(self, *args):
         pass
 
@@ -1746,10 +1850,11 @@ if __name__ == "__main__":
     threading.Thread(target=run_scheduler, daemon=True).start()
     time.sleep(5)
     alert_admin(
-        f"🏴‍☠️ ALPHA Dual Engine v14 DEPLOYED\n"
+        f"🏴‍☠️ ALPHA Dual Engine v14.5 DEPLOYED\n"
         f"Mode: {SCAN_MODE.upper()}\n"
         f"Preset: {PRESETS[get_config()['active_preset']]['label']}\n"
-        f"[ATR+Fib SL/TP | Thread-Safe | RR Filter]"
+        f"[NOVA7 Risk Mgmt | Position Sizing | ATR+Structure SL]\n"
+        f"Gunakan /modal untuk set modal trading"
     )
     threading.Thread(target=scan_once).start()
     bot.infinity_polling(timeout=20, long_polling_timeout=20)
