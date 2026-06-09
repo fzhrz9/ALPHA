@@ -63,14 +63,14 @@ def alert_admin(text):
 # 2. PRESETS & SUPABASE HELPERS
 # ==========================================
 PRESETS = {
-    "soft":     {"min_vol_24h": 500_000,    "score_pass": 2,  "label": "🟢 SOFT"},
-    "standard": {"min_vol_24h": 1_000_000,  "score_pass": 3,  "label": "🟡 STANDARD"},
-    "hard":     {"min_vol_24h": 2_500_000,  "score_pass": 4,  "label": "🔴 HARD"}
+    "soft ":     { "min_vol_24h ": 500_000,     "score_pass ": 2,   "label ":  "🟢 SOFT "},
+    "standard ": { "min_vol_24h ": 1_000_000,   "score_pass ": 2,   "label ":  " STANDARD "},
+    "hard ":     { "min_vol_24h ": 2_500_000,   "score_pass ": 3,   "label ":  "🔴 HARD "}
 }
 
 DEFAULT_CONFIG = {
     "min_vol_24h":   1_000_000,
-    "score_pass":    3,
+    "score_pass":    2,
     "cooldown_hours": 24,
     "active_preset": "standard"
 }
@@ -612,10 +612,26 @@ def analyze_smc_pa(sym, verbose=True):
     # Fresh dan anchor sama? (hanya 1 SL tersedia) — jangan double count
     same_pair = (fresh_sh == anchor_sh and fresh_sl == anchor_sl)
 
-    if not in_fresh_zone and not in_anchor_zone: 
+    if not in_fresh_zone and not in_anchor_zone:  
         zone_ref = fresh_fib["fib500"] if fresh_fib else (anchor_fib["fib500"] if anchor_fib else 0)
-        log("❌ REJECT: " + ("PREMIUM ZONE" if price > zone_ref else "EXTREME (di luar range)"))
-        return None
+    
+        # [FIX-PREMIUM] Benarkan Premium Zone jika EMA Bullish dan Price > EMA20 (Strong Momentum)
+        # Coin strong selalunya cuma pullback ke EMA20 (sekitar 38.2% Fib) dan terus pump.
+        if price > zone_ref and ema_bullish and price > ema20:
+            log(f"⚠️ PREMIUM ZONE OVERRIDE: Price > Fib500 tapi EMA Bullish → Allow (Strong Momentum)")
+            # Set default variables supaya code bawah tak crash (UnboundLocalError)
+            setup_mode = "INTRADAY"
+            swing_high = fresh_sh or anchor_sh
+            swing_low  = fresh_sl or anchor_sl
+            rng        = swing_high - swing_low
+            fib_500    = swing_high - rng * 0.500
+            fib_618    = swing_high - rng * 0.618
+            fib_786    = swing_high - rng * 0.786
+            in_discount = False
+            fib_zone = f"Premium (>{fmt(zone_ref)})"
+        else:
+            log("❌ REJECT: " + ("PREMIUM ZONE" if price > zone_ref else "EXTREME (di luar range)"))
+            return None
 
     # Pilih mode: Intraday dapat keutamaan (lebih presisi)
     if in_fresh_zone and fresh_fib and not same_pair:
