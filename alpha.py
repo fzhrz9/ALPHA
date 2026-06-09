@@ -74,6 +74,8 @@ DEFAULT_CONFIG = {
     "cooldown_hours": 24,
     "active_preset": "standard"
 }
+# [AUTO-FIX] Buang semua trailing space dalam PRESETS secara automatik
+PRESETS = {k.strip(): {k2.strip(): v2 for k2, v2 in v.items()} for k, v in PRESETS.items()}
 
 _config_cache = {}
 _config_loaded_at = 0
