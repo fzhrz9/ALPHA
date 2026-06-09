@@ -64,13 +64,13 @@ def alert_admin(text):
 # ==========================================
 PRESETS = {
     "soft":     {"min_vol_24h": 500_000,   "score_pass": 2, "label": "🟢 SOFT"},
-    "standard": {"min_vol_24h": 1_000_000, "score_pass": 2, "label": "🟡 STANDARD"},
-    "hard":     {"min_vol_24h": 2_500_000, "score_pass": 3, "label": "🔴 HARD"}
+    "standard": {"min_vol_24h": 1_000_000, "score_pass": 3, "label": "🟡 STANDARD"},
+    "hard":     {"min_vol_24h": 2_500_000, "score_pass": 4, "label": " HARD"}
 }
 
 DEFAULT_CONFIG = {
     "min_vol_24h":   1_000_000,
-    "score_pass":    2,
+    "score_pass":    3,
     "cooldown_hours": 24,
     "active_preset": "standard"
 }
