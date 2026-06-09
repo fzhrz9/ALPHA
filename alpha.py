@@ -599,7 +599,12 @@ def analyze_smc_pa(sym, verbose=True):
 
     curr  = candles[-1]
     prev  = candles[-2]
-    price = curr['c']
+
+    # [FIX-ENTRY] Guna Live Price untuk elak time-lag candle close.
+    # Harga dalam signal akan sama dengan harga chart semasa bot scan.
+    price = get_gateio_price(sym)
+    if price == 0:
+        price = curr['c'] # Fallback jika API fail
 
     in_fresh_zone   = fresh_fib  and fresh_fib["fib786"]   <= price <= fresh_fib["fib500"]
     in_anchor_zone = anchor_fib and anchor_fib["fib786"]  <= price <= anchor_fib["fib500"]
@@ -799,10 +804,16 @@ def analyze_smc_pa(sym, verbose=True):
         sl = sl_fib786_floor
         log(f"📐 SL dipertingkat ke Fib786 floor ${fmt(sl)} (lebih ketat dari ATR/structure)")
 
-    # TP: Fibonacci Extensions
-    tp1 = swing_high                    # 100% measured move
-    tp2 = swing_low + (rng * 1.618)     # 161.8% Fib extension
-    tp3 = swing_low + (rng * 2.618)     # 261.8% Fib extension
+    # [FIX-TP] Guna Anchor Swing High untuk TP, bukan Fresh Swing High.
+    # Fresh high selalunya micro-structure (contoh 0.1565). 
+    # Anchor high adalah macro structure (contoh 0.16700).
+    target_high = anchor_sh if anchor_sh and anchor_sh > swing_high else swing_high
+    rng_target = target_high - swing_low
+
+    # TP: Fibonacci Extensions (Guna Macro Range)
+    tp1 = target_high                       # 100% measured move ke Major High
+    tp2 = swing_low + (rng_target * 1.618)  # 161.8% Fib extension
+    tp3 = swing_low + (rng_target * 2.618)  # 261.8% Fib extension
 
     # COUNTER-TREND: Cap TP di H4 Swing High
     if is_counter_trend and h4_swing_high > 0:
