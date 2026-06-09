@@ -63,9 +63,9 @@ def alert_admin(text):
 # 2. PRESETS & SUPABASE HELPERS
 # ==========================================
 PRESETS = {
-    "soft ":     { "min_vol_24h ": 500_000,     "score_pass ": 2,   "label ":  "🟢 SOFT "},
-    "standard ": { "min_vol_24h ": 1_000_000,   "score_pass ": 2,   "label ":  " STANDARD "},
-    "hard ":     { "min_vol_24h ": 2_500_000,   "score_pass ": 3,   "label ":  "🔴 HARD "}
+    "soft":     {"min_vol_24h": 500_000,   "score_pass": 2, "label": "🟢 SOFT"},
+    "standard": {"min_vol_24h": 1_000_000, "score_pass": 2, "label": "🟡 STANDARD"},
+    "hard":     {"min_vol_24h": 2_500_000, "score_pass": 3, "label": "🔴 HARD"}
 }
 
 DEFAULT_CONFIG = {
@@ -110,7 +110,7 @@ def apply_preset(preset_name):
         return False, "Preset tidak wujud"
     p = PRESETS[preset_name]
     set_config("min_vol_24h", p["min_vol_24h"])
-    set_config("score_pass",  p["score_pass"])
+    set_config("score_pass", p["score_pass"])
     set_config("active_preset", preset_name)
     return True, p["label"]
 
@@ -332,6 +332,55 @@ def calculate_atr(candles, period=14):
         tr   = max(c['h'] - c['l'], abs(c['h'] - prev['c']), abs(c['l'] - prev['c']))
         trs.append(tr)
     return sum(trs) / len(trs) if trs else 0
+
+def calculate_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return 50.0
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i-1]
+        gains.append(max(0, change))
+        losses.append(max(0, -change))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0: return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+def calculate_adx(candles, period=14):
+    if len(candles) < period * 2: return 0.0
+    plus_dm, minus_dm, trs = [], [], []
+    for i in range(1, len(candles)):
+        high_diff = candles[i]['h'] - candles[i-1]['h']
+        low_diff = candles[i-1]['l'] - candles[i]['l']
+        plus_dm.append(max(0, high_diff) if high_diff > low_diff else 0)
+        minus_dm.append(max(0, low_diff) if low_diff > high_diff else 0)
+        tr = max(candles[i]['h'] - candles[i]['l'], abs(candles[i]['h'] - candles[i-1]['c']), abs(candles[i]['l'] - candles[i-1]['c']))
+        trs.append(tr)
+    def smooth(data, p):
+        s = [sum(data[:p])]
+        for i in range(p, len(data)): s.append(s[-1] - (s[-1] / p) + data[i])
+        return s
+    smooth_plus = smooth(plus_dm, period)
+    smooth_minus = smooth(minus_dm, period)
+    smooth_tr = smooth(trs, period)
+    dx_values = []
+    for i in range(len(smooth_tr)):
+        if smooth_tr[i] == 0: 
+            dx_values.append(0)
+            continue
+        plus_di = 100 * (smooth_plus[i] / smooth_tr[i])
+        minus_di = 100 * (smooth_minus[i] / smooth_tr[i])
+        di_sum = plus_di + minus_di
+        dx_values.append(100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0)
+    if len(dx_values) < period: return 0.0
+    adx = sum(dx_values[:period]) / period
+    for i in range(period, len(dx_values)): adx = (adx * (period - 1) + dx_values[i]) / period
+    return adx
 
 def find_fractal_swings(candles, lookback=2):
     """
@@ -1011,9 +1060,95 @@ def analyze_early_momentum(sym, verbose=True):
         "is_counter_trend": (h4_bias == "downtrend")
     }
 
-# ==========================================
-# 6. SIGNAL GENERATOR
-# ==========================================
+==========================================
+6. ENGINE 3: BREAKOUT SNIPER (1H) — DONCHIAN + VOLUME CLIMAX
+==========================================
+def analyze_breakout_sniper(sym, verbose=True):
+    log = lambda msg: print(f"[{sym}-1H-BO] {msg}") if verbose else None
+    candles = get_gateio_klines(sym, "1h", 250)
+    if len(candles) < 210:
+        log("❌ REJECT: Data H1 < 210 candle")
+        return None
+
+    closes = [c['c'] for c in candles]
+    highs = [c['h'] for c in candles]
+    lows = [c['l'] for c in candles]
+    vols = [c['v'] for c in candles]
+
+    # 1. Trend Filter: EMA 50 > EMA 200 (Golden Cross)
+    ema50 = calculate_ema(closes, 50)
+    ema200 = calculate_ema(closes, 200)
+    if ema50 <= ema200:
+        log(f"❌ REJECT: EMA50 ({fmt(ema50)}) <= EMA200 ({fmt(ema200)}) - No Golden Cross")
+        return None
+
+    # 2. ADX Filter: ADX > 20 (Avoid sideways whipsaw)
+    adx = calculate_adx(candles, 14)
+    if adx < 20:
+        log(f"❌ REJECT: ADX ({adx:.2f}) < 20 - Market sideways/weak trend")
+        return None
+
+    # 3. Trigger: Donchian Breakout (Close > max(High, 20))
+    curr = candles[-1]
+    price = curr['c']
+    highest_20 = max(highs[-21:-1]) # High of previous 20 candles
+    if price <= highest_20:
+        log(f"❌ REJECT: Price ({fmt(price)}) <= 20-candle High ({fmt(highest_20)})")
+        return None
+
+    # 4. Volume Climax: Current Vol > 2.5 * MA(Vol, 20)
+    avg_vol_20 = sum(vols[-21:-1]) / 20
+    if avg_vol_20 == 0:
+        log("❌ REJECT: Average volume is 0")
+        return None
+    curr_vol = vols[-1]
+    if curr_vol < avg_vol_20 * 2.5:
+        log(f"❌ REJECT: Volume ({curr_vol:.0f}) < 2.5x Avg ({avg_vol_20:.0f})")
+        return None
+
+    # 5. Momentum: RSI > 55 (Strong momentum, no upper cap)
+    rsi = calculate_rsi(closes, 14)
+    if rsi < 55:
+        log(f"❌ REJECT: RSI ({rsi:.2f}) < 55 - Weak momentum")
+        return None
+
+    log(f"✅ BREAKOUT CONFIRMED | ADX: {adx:.1f} | Vol: {curr_vol/avg_vol_20:.1f}x | RSI: {rsi:.1f}")
+
+    # SL/TP Calculation
+    # SL: Swing Low of the breakout move (lowest low of last 10 candles)
+    sl = min(lows[-10:]) * 0.995 # 0.5% buffer below swing low
+    risk = price - sl
+    if risk <= 0:
+        log("❌ REJECT: Invalid Risk (SL >= Entry)")
+        return None
+
+    # TP: Breakout strategies need wide targets. 2R, 4R, 6R.
+    tp1 = price + (risk * 2.0)
+    tp2 = price + (risk * 4.0)
+    tp3 = price + (risk * 6.0)
+
+    rr1 = 2.0
+    rr2 = 4.0
+
+    log(f"📐 SL: ${fmt(sl)} | TP1 RR:2.0 | TP2 RR:4.0")
+
+    return {
+        "setup ": "🚀 BREAKOUT SNIPER (Donchian + Vol Climax)",
+        "entry ": price,
+        "sl ": sl,
+        "tp1 ": tp1,
+        "tp2 ": tp2,
+        "tp3 ": tp3,
+        "rr1 ": rr1,
+        "rr2 ": rr2,
+        "score ": 4,
+        "fib_zone ": "N/A",
+        "timeframe ": "1H-BO",
+        "setup_mode ": "BREAKOUT",
+        "structure ": "uptrend_breakout",
+        "is_counter_trend ": False
+    }
+
 def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     cfg   = get_config()
     entry = smc_data["entry"]
@@ -1080,8 +1215,8 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
     btc_warn = f"⚠️ <b>BTC ALERT:</b> BTC {btc_chg:+.2f}%\n\n" if btc_chg < -4.0 else ""
 
     pair_name    = f"{sym}USDT"
-    engine_icon  = "⚡" if timeframe == "M15" else "🏴‍☠️"
-    engine_label = "MOMENTUM" if timeframe == "M15" else "PULLBACK"
+    engine_icon  = "⚡" if timeframe == "M15" else ("🚀" if timeframe == "1H-BO" else "🏴‍☠️")
+    engine_label = "MOMENTUM" if timeframe == "M15" else ("BREAKOUT" if timeframe == "1H-BO" else "PULLBACK")
 
     counter_trend_badge = ""
     if smc_data.get("is_counter_trend", False):
@@ -1226,7 +1361,13 @@ def scan_once():
                     if send_signal(sym, smc, t["volume_24h"], btc_chg=btc_chg):
                         passed += 1
                         time.sleep(2)
-
+            # ENGINE 3: BREAKOUT SNIPER
+            if SCAN_MODE in ["breakout", "both", "all"]:
+                bo = analyze_breakout_sniper(sym, verbose=True)
+                if bo and bo["score "] >= cfg["score_pass "]:
+                    if send_signal(sym, bo, t["volume_24h "], btc_chg=btc_chg):
+                        passed += 1
+                        time.sleep(2)
             if SCAN_MODE in ["momentum", "both"]:
                 if t in momentum_candidates:
                     if SCAN_MODE == "both" and is_in_cooldown(sym):
@@ -1419,7 +1560,9 @@ def cmd_start(msg):
         f"<b>🏴‍️ Engine 1 — Pullback (H1+H4):</b>\n"
         f"Fractal Swing | EMA | ATR+Fib SL | Fib Ext TP\n\n"
         f"<b>⚡ Engine 2 — Momentum (M15):</b>\n"
-        f"Volume Anomaly | ATR+Fib SL | Fib Ratio TP"
+        f"Volume Anomaly | ATR+Fib SL | Fib Ratio TP\n\n"
+        f"<b>🚀 Engine 3 — Breakout (1H):</b>\n"
+        f"Donchian + Vol Climax | ADX Filter | 2R/4R/6R TP"
     )
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
