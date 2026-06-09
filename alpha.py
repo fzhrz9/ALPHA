@@ -3,7 +3,7 @@ ALPHA — Gate.io Dual Engine Sniper (Institutional Grade)
 Engine 1: Pullback SMC (H1 + H4) — Fractal Swing + EMA + VPA Impulse
 Engine 2: Early Momentum (M15) — Volume Anomaly + Accumulation
 Mode: /mode pullback | momentum | both
-v14.5: NOVA7 RISK MANAGEMENT INTEGRATION
+v14.5: ALPHA RISK MANAGEMENT INTEGRATION
   - Position sizing dengan modal user
   - ATR + structure SL calculation
   - Hard cap 50% modal per trade
@@ -173,7 +173,7 @@ def get_signals_since(days=7):
         return []
 
 # ==========================================
-# [NOVA7-RISK] PENGURUSAN RISIKO INSTITUTIONAL GRADE
+# [ALPHA-RISK] PENGURUSAN RISIKO INSTITUTIONAL GRADE
 # ==========================================
 
 def set_user_capital(user_id, capital, risk_pct=2.0):
@@ -801,7 +801,7 @@ def analyze_smc_pa(sym, verbose=True):
         return None
 
     # ─────────────────────────────────────────────────────────────
-    # [NOVA7-RISK] SL/TP Calculation — Institutional Grade
+    # [ALPHA-RISK] SL/TP Calculation — Institutional Grade
     #   SL: compute_final_sl() — ATR + structure low combo
     #       + [FIX-01a] Fib786 floor: untuk Fib pullback entry,
     #         SL terbaik = just below fib_786 (structural stop SMC/ICT).
@@ -944,7 +944,7 @@ def analyze_early_momentum(sym, verbose=True):
     entry      = price
 
     # ─────────────────────────────────────────────────────────────
-    # [NOVA7-RISK] SL/TP Calculation — Institutional Grade
+    # [ALPHA-RISK] SL/TP Calculation — Institutional Grade
     # ─────────────────────────────────────────────────────────────
     atr_m15 = calculate_atr(candles, 14)
     range_low = min(lows[-20:])
@@ -1026,7 +1026,7 @@ def send_signal(sym, smc_data, vol_24h, btc_chg=0.0):
         return False
 
     # ─────────────────────────────────────────────────────────────
-    # [NOVA7-RISK] Position Sizing & Risk Management
+    # [ALPHA-RISK] Position Sizing & Risk Management
     # ─────────────────────────────────────────────────────────────
     # Ambil modal pengguna (default $50 jika belum set)
     user_cap, user_risk = get_user_capital(int(ADMIN_ID) if ADMIN_ID else 0)
@@ -1280,7 +1280,7 @@ def scan_once():
 
                         if range_pct <= 5 and (is_pinbar or is_engulfing):
                             # ─────────────────────────────────────────────
-                            # [NOVA7-RISK] M15 inline SL/TP: ATR + compute_final_sl
+                            # [ALPHA-RISK] M15 inline SL/TP: ATR + compute_final_sl
                             # ─────────────────────────────────────────────
                             atr_m15   = calculate_atr(candles_m15, 14)
                             sl_m15    = compute_final_sl(curr['c'], min(lows[-20:]), atr_m15, atr_mult=0.75, max_sl_pct=0.08)
@@ -1723,7 +1723,7 @@ def monitor_pullback_watchlist():
 
             if is_pinbar or is_engulfing:
                 atr_m5    = calculate_atr(candles_m5, 14)
-                # [NOVA7-RISK] Guna compute_final_sl
+                # [ALPHA-RISK] Guna compute_final_sl
                 sl_m5     = compute_final_sl(curr['c'], data["fib_786"], atr_m5, atr_mult=0.75, max_sl_pct=0.08)
                 risk_m5   = curr['c'] - sl_m5
                 if risk_m5 <= 0:
@@ -1803,7 +1803,7 @@ def monitor_bos_breaks():
 
                         if is_pinbar or is_engulfing:
                             atr_m15  = calculate_atr(candles_m15, 14)
-                            # [NOVA7-RISK] Guna compute_final_sl
+                            # [ALPHA-RISK] Guna compute_final_sl
                             sl_hold  = compute_final_sl(current_price, level, atr_m15, atr_mult=1.0, max_sl_pct=0.08)
                             risk_hold = current_price - sl_hold
                             if risk_hold > 0:
@@ -1833,7 +1833,7 @@ def monitor_bos_breaks():
                 print(f"[{sym}] 💥 BOS BREAK! LH ${fmt(level)} ditembusi @ ${fmt(current_price)} ({elapsed_hours:.1f}h)")
                 candles_m5 = get_gateio_klines(sym, "5m", 30)
                 atr_bos    = calculate_atr(candles_m5, 14) if len(candles_m5) >= 15 else current_price * 0.015
-                # [NOVA7-RISK] Guna compute_final_sl
+                # [ALPHA-RISK] Guna compute_final_sl
                 sl_bos     = compute_final_sl(current_price, level * 0.98, atr_bos, atr_mult=1.0, max_sl_pct=0.08)
                 risk_bos   = current_price - sl_bos
                 if risk_bos <= 0:
@@ -1893,7 +1893,7 @@ class RenderHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ALPHA DUAL ENGINE v14.5 [NOVA7 RISK MGMT] ACTIVE")
+        self.wfile.write(b"ALPHA DUAL ENGINE v14.5 [ALPHA RISK MGMT] ACTIVE")
     
     def do_HEAD(self):
         self.send_response(200)
@@ -1912,7 +1912,7 @@ if __name__ == "__main__":
         f"🏴‍☠️ ALPHA Dual Engine v14.5 DEPLOYED\n"
         f"Mode: {SCAN_MODE.upper()}\n"
         f"Preset: {PRESETS[get_config()['active_preset']]['label']}\n"
-        f"[NOVA7 Risk Mgmt | Position Sizing | ATR+Structure SL]\n"
+        f"[ALPHA Risk Mgmt | Position Sizing | ATR+Structure SL]\n"
         f"Gunakan /modal untuk set modal trading"
     )
     threading.Thread(target=scan_once).start()
