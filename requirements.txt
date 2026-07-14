@@ -1,4 +1,6 @@
+flask
 pyTelegramBotAPI
 requests
-schedule
-supabase>=2.0.3
+aiohttp
+websockets
+ccxt
