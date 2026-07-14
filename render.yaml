@@ -1,0 +1,35 @@
+# Render Blueprint — deploy dengan "New > Blueprint" atau set manual ikut nilai di bawah
+services:
+  - type: web
+    name: nova-alpha-auto
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python nova_alpha_auto.py
+    envVars:
+      - key: DRY_RUN
+        value: "true"          # WAJIB "true" dulu — tukar "false" bila yakin
+      - key: EXCHANGE
+        value: "gateio"        # gateio | binance
+      - key: PAPER_CAPITAL_USDT
+        value: "200"
+      - key: RISK_PCT
+        value: "1.0"
+      - key: MAX_POSITION_USDT
+        value: "25"
+      - key: MAX_OPEN_TRADES
+        value: "3"
+      - key: MAX_DAILY_LOSS_PCT
+        value: "5"
+      - key: API_KEY
+        sync: false            # isi di dashboard (rahsia)
+      - key: API_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false            # optional — notifikasi sahaja
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SUPABASE_URL
+        sync: false            # optional — backup DB (disyorkan, Render free padam disk)
+      - key: SUPABASE_KEY
+        sync: false
