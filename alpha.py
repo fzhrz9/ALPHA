@@ -163,7 +163,7 @@ def supa_restore_on_startup():
         # Ambil trades yang masih aktif (bukan COMPLETED atau STOP_LOSS)
         rows = supa_fetch(
             "active_trades",
-            filters="status=neq.COMPLETED&status=neq.STOP_LOSS")
+            filters="status=neq.COMPLETED&status=neq.STOP_LOSS&status=neq.BE_STOP&status=neq.TRAIL_STOP")
         if not rows:
             return 0
         restored = 0
@@ -427,7 +427,7 @@ def get_active_trades():
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
-            "SELECT * FROM active_trades WHERE status NOT IN ('COMPLETED', 'STOP_LOSS')").fetchall()
+            "SELECT * FROM active_trades WHERE status NOT IN ('COMPLETED', 'STOP_LOSS', 'BE_STOP', 'TRAIL_STOP')").fetchall()
 
 def update_trade_status(msg_id, status, exit_price=None):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
@@ -2309,12 +2309,16 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, daily_note,
 
     t = get_tuning()
 
-    # MACRO — info sahaja, tidak block
+    # MACRO — HARD BLOCK (FIX): jangan long altcoin semasa BTC dump.
+    # Sebelum: "info sahaja" → bot beli semasa BTC -3.75%, hasil 0W/11L.
     macro_ok, macro_reason = macro_filter_pass(engine_type, t)
     macro_state  = get_btc_macro_state()
     macro_btc_pct = macro_state['btc_24h_pct'] if macro_state else 0.0
     if not macro_ok:
-        log_activity(f"{symbol} ⚠️ Macro Warning: {macro_reason}")
+        log_activity(f"{symbol} ❌ Macro block: {macro_reason}")
+        bump_stat('rejected')
+        save_cooldown(f"F_{engine_type}_{symbol}", float(t.get('fail_cooldown_h', 0.33)))
+        return
 
     # ── SL ────────────────────────────────────────────────────────────────────
     structure_low = sig['low']
@@ -2461,6 +2465,8 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, daily_note,
     if not exec_res.get('ok'):
         log_activity(f"{symbol} ⏸ Skip execute: {exec_res.get('reason')}")
         bump_stat('rejected')
+        # FIX: elak signal sama re-fire setiap 3 minit semasa halt/limit
+        save_cooldown(f"F_{engine_type}_{symbol}", float(t.get('fail_cooldown_h', 0.33)))
         return
     fill_price = exec_res['fill']
     if fill_price != price and price > 0:
@@ -3562,8 +3568,16 @@ async def trade_tracker():
                 _notified_trades.add(key)
                 return False
 
-            if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
-                if _guard('STOP_LOSS'): continue
+            if price <= t['sl'] and status not in ['STOP_LOSS', 'BE_STOP', 'TRAIL_STOP', 'COMPLETED']:
+                # FIX: bezakan SL sebenar (-1R) vs stop selepas TP1/TP2 (profit terkunci).
+                # Sebelum: semua dikira STOP_LOSS -1R → tear sheet menipu.
+                if status == 'TP1_HIT':
+                    final_st = 'BE_STOP'      # 40% dijual @TP1, baki keluar @BE
+                elif status == 'TP2_HIT':
+                    final_st = 'TRAIL_STOP'   # TP1+TP2 dijual, baki keluar @TP1
+                else:
+                    final_st = 'STOP_LOSS'
+                if _guard(final_st): continue
                 ex_r = EXECUTOR.sell(t['msg_id'], sym, 1.0, price, 'SL')
                 pnl_txt = f"\n💸 PnL: ${ex_r['pnl']:+.2f}" if ex_r.get('ok') else ""
                 loop = asyncio.get_event_loop()
@@ -3572,10 +3586,13 @@ async def trade_tracker():
                 reply = (f"🛑 <b>{sym} — STOP LOSS HIT</b>\n"
                          f"{sl_desc} pada <code>${price:.6f}</code>\n\n"
                          f"🔬 <b>POST-MORTEM:</b>\n{autopsy}{pnl_txt}")
-                new_status = 'STOP_LOSS'
+                new_status = final_st
                 record_exit = True
-                asyncio.ensure_future(
-                    _check_reentry_opportunity(sym, price, t['engine']))
+                # FIX: re-entry hanya selepas SL sebenar — bukan selepas trade menang
+                # (re-entry berulang pada coin jatuh = punca loss berganda OPNUSDT).
+                if final_st == 'STOP_LOSS':
+                    asyncio.ensure_future(
+                        _check_reentry_opportunity(sym, price, t['engine']))
             elif price >= t['tp3'] and status != 'COMPLETED':
                 if _guard('COMPLETED'): continue
                 ex_r = EXECUTOR.sell(t['msg_id'], sym, 1.0, price, 'TP3')
@@ -3622,14 +3639,18 @@ def generate_tear_sheet():
     seven_days_ago = time.time() - (7 * 86400)
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
-        trades = conn.execute("SELECT * FROM active_trades WHERE status IN ('STOP_LOSS', 'TP1_HIT', 'TP2_HIT', 'COMPLETED') AND timestamp > ?", (seven_days_ago,)).fetchall()
+        trades = conn.execute("SELECT * FROM active_trades WHERE status IN ('STOP_LOSS', 'BE_STOP', 'TRAIL_STOP', 'TP1_HIT', 'TP2_HIT', 'COMPLETED') AND timestamp > ?", (seven_days_ago,)).fetchall()
         if not trades:
             return "📊 <b>WEEKLY TEAR SHEET</b>\n\n<i>Tiada trade closed dalam 7 hari lepas.</i>"
         total = len(trades)
         wins = sum(1 for t in trades if t['status'] != 'STOP_LOSS')
         losses = total - wins
         win_rate = (wins / total) * 100 if total > 0 else 0
-        r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5}
+        # FIX: R realized berdasarkan partial fill sebenar (TP1_SELL_PCT/TP2_SELL_PCT)
+        _f1, _f2 = TP1_SELL_PCT / 100.0, TP2_SELL_PCT / 100.0
+        r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5,
+                 'BE_STOP': round(_f1 * 2.0, 2),
+                 'TRAIL_STOP': round(_f1 * 2.0 + _f2 * 3.5 + max(0.0, 1.0 - _f1 - _f2) * 2.0, 2)}
         total_r = sum(r_map.get(t['status'], 0) for t in trades)
         gross_profit = sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) > 0)
         gross_loss = abs(sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) < 0))
@@ -3681,7 +3702,10 @@ def _fmt_myt(ts):
 
 def _calc_r_realized(t):
     """Kira R-multiple realized — combine nominal status + exit_price jika tersedia."""
+    _f1, _f2 = TP1_SELL_PCT / 100.0, TP2_SELL_PCT / 100.0
     r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5,
+             'BE_STOP': round(_f1 * 2.0, 2),
+             'TRAIL_STOP': round(_f1 * 2.0 + _f2 * 3.5 + max(0.0, 1.0 - _f1 - _f2) * 2.0, 2),
              'TRACKING': 0.0}
     return r_map.get(t['status'], 0.0)
 
@@ -3697,7 +3721,7 @@ def generate_trading_journal(days=7):
             (period_start,)).fetchall()
         pending = conn.execute("SELECT * FROM pending_signals").fetchall()
 
-    closed = [t for t in trades if t['status'] in ('STOP_LOSS', 'TP1_HIT', 'TP2_HIT', 'COMPLETED')]
+    closed = [t for t in trades if t['status'] in ('STOP_LOSS', 'BE_STOP', 'TRAIL_STOP', 'TP1_HIT', 'TP2_HIT', 'COMPLETED')]
     open_trades = [t for t in trades if t['status'] in ('TRACKING',)]
 
     period_label = f"{datetime.fromtimestamp(period_start, tz=timezone.utc).strftime('%d %b')} – {datetime.now(timezone.utc).strftime('%d %b %Y')}"
